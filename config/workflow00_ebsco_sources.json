@@ -1,0 +1,151 @@
+{
+  "schema": "living-evidence-map-workflow00-ebsco-sources-v1",
+  "description": "EBSCOhost EIT bibliographic databases available to Workflow 00. Each source remains a distinct provenance source while sharing one API harvester.",
+  "sources": {
+    "ebsco_africa_wide": {
+      "db_code": "awn",
+      "display_name": "Africa-Wide Information",
+      "search_fields": [
+        "TI",
+        "AB",
+        "KW"
+      ]
+    },
+    "ebsco_amed": {
+      "db_code": "amed",
+      "display_name": "AMED - The Allied and Complementary Medicine Database",
+      "search_fields": [
+        "TI",
+        "AB",
+        "KW"
+      ]
+    },
+    "ebsco_psycinfo": {
+      "db_code": "psyh",
+      "display_name": "APA PsycInfo",
+      "search_fields": [
+        "TI",
+        "AB",
+        "KW"
+      ]
+    },
+    "ebsco_atla_religion": {
+      "db_code": "rfh",
+      "display_name": "Atla Religion Database with AtlaSerials",
+      "search_fields": [
+        "TI"
+      ]
+    },
+    "ebsco_biological_agricultural_index": {
+      "db_code": "bai",
+      "display_name": "Biological & Agricultural Index Plus (H.W. Wilson)",
+      "search_fields": [
+        "TI",
+        "AB"
+      ]
+    },
+    "ebsco_cinahl": {
+      "db_code": "c8h",
+      "display_name": "CINAHL with Full Text",
+      "search_fields": [
+        "TI",
+        "AB"
+      ]
+    },
+    "ebsco_communication_mass_media": {
+      "db_code": "ufh",
+      "display_name": "Communication & Mass Media Complete",
+      "search_fields": [
+        "TI",
+        "AB",
+        "KW"
+      ]
+    },
+    "ebsco_econlit": {
+      "db_code": "ecn",
+      "display_name": "EconLit",
+      "search_fields": [
+        "TI",
+        "AB"
+      ]
+    },
+    "ebsco_eric": {
+      "db_code": "eric",
+      "display_name": "ERIC",
+      "search_fields": [
+        "TI",
+        "AB"
+      ]
+    },
+    "ebsco_family_society": {
+      "db_code": "flh",
+      "display_name": "Family & Society Studies Worldwide",
+      "search_fields": [
+        "TI",
+        "AB",
+        "KW"
+      ]
+    },
+    "ebsco_greenfile": {
+      "db_code": "8gh",
+      "display_name": "GreenFILE",
+      "search_fields": [
+        "TI",
+        "AB",
+        "KW"
+      ]
+    },
+    "ebsco_hospitality_tourism": {
+      "db_code": "hjh",
+      "display_name": "Hospitality & Tourism Complete",
+      "search_fields": [
+        "TI",
+        "AB",
+        "KW"
+      ]
+    },
+    "ebsco_medline": {
+      "db_code": "cmedm",
+      "display_name": "MEDLINE",
+      "search_fields": [
+        "TI",
+        "AB"
+      ]
+    },
+    "ebsco_mla": {
+      "db_code": "mzh",
+      "display_name": "MLA International Bibliography",
+      "search_fields": [
+        "TI",
+        "AB"
+      ]
+    },
+    "ebsco_political_science": {
+      "db_code": "poh",
+      "display_name": "Political Science Complete",
+      "search_fields": [
+        "TI",
+        "AB",
+        "KW"
+      ]
+    },
+    "ebsco_sportdiscus": {
+      "db_code": "s3h",
+      "display_name": "SPORTDiscus with Full Text",
+      "search_fields": [
+        "TI",
+        "AB",
+        "KW"
+      ]
+    },
+    "ebsco_waters_oceans": {
+      "db_code": "wrw",
+      "display_name": "Waters & Oceans Worldwide",
+      "search_fields": [
+        "TI",
+        "AB",
+        "KW"
+      ]
+    }
+  }
+}

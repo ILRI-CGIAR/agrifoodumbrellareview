@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thesalmonandthetomato.org/schemas/workflow00-ris-registry-v1.json",
+  "title": "LivingEvidenceMap Workflow 00 RIS search registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "acquisition",
+    "database",
+    "search",
+    "field_semantics",
+    "input",
+    "staging"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "workflow00-source-registry-v1"
+    },
+    "acquisition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "source_format"
+      ],
+      "properties": {
+        "method": {
+          "const": "ris_upload"
+        },
+        "source_format": {
+          "const": "RIS"
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "short_name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "short_name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "description": "Stable database/source code propagated as the existing W01 source value."
+        },
+        "platform": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "database_scope": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "search": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "search_date"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "search_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "search_string": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "search_fields": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "limits": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "reported_results": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "field_semantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ris_KW"
+      ],
+      "properties": {
+        "ris_KW": {
+          "type": "string",
+          "enum": [
+            "author_keywords",
+            "indexing_terms",
+            "mixed",
+            "unknown"
+          ],
+          "description": "Semantic interpretation of RIS KW supplied by the exporting database."
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "files"
+      ],
+      "properties": {
+        "expected_chunk_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "encoding": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": "UTF-8"
+        },
+        "files": {
+          "type": "array",
+          "minItems": 0,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "filename"
+            ],
+            "properties": {
+              "filename": {
+                "type": "string",
+                "minLength": 1
+              },
+              "exported_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "notes": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "bytes": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "description": "Resolved raw file size in bytes; may be null before W00 validation."
+              },
+              "sha256": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[a-f0-9]{64}$",
+                "description": "Resolved SHA-256 of the raw RIS chunk; may be null before W00 validation."
+              }
+            }
+          },
+          "description": "RIS files for the logical search. May be empty before W00 resolves an existing Zenodo draft; the completed registry must list every RIS file."
+        }
+      }
+    },
+    "staging": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "reserved_doi",
+        "publish_after_validation"
+      ],
+      "properties": {
+        "method": {
+          "const": "zenodo_draft"
+        },
+        "reserved_doi": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deposition_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "publish_after_validation": {
+          "type": "boolean",
+          "default": false,
+          "description": "Manual RIS completion must not create a new Zenodo deposition. False leaves the completed existing deposition as a draft for human review."
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

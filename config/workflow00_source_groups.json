@@ -1,0 +1,85 @@
+{
+  "schema": "living-evidence-map-workflow00-source-groups-v1",
+  "description": "Coverage presets for Workflow 00 full-run database selection. Resolved individual sources are frozen for subsequent updates.",
+  "groups": {
+    "core_multidisciplinary": {
+      "display_name": "Core multidisciplinary",
+      "sources": [
+        "lens",
+        "scopus",
+        "wos",
+        "openalex"
+      ]
+    },
+    "health_medicine": {
+      "display_name": "Health & medicine",
+      "sources": [
+        "pubmed",
+        "ebsco_medline",
+        "ebsco_cinahl",
+        "ebsco_amed",
+        "ebsco_psycinfo"
+      ]
+    },
+    "environment_agriculture": {
+      "display_name": "Environment & agriculture",
+      "sources": [
+        "agricola",
+        "ebsco_biological_agricultural_index",
+        "ebsco_greenfile",
+        "ebsco_waters_oceans",
+        "cba"
+      ]
+    },
+    "social_sciences": {
+      "display_name": "Social sciences",
+      "sources": [
+        "ebsco_psycinfo",
+        "ebsco_econlit",
+        "ebsco_political_science",
+        "ebsco_family_society"
+      ]
+    },
+    "education": {
+      "display_name": "Education",
+      "sources": [
+        "ebsco_eric",
+        "ebsco_psycinfo"
+      ]
+    },
+    "regional": {
+      "display_name": "Regional",
+      "sources": [
+        "ebsco_africa_wide",
+        "cba"
+      ]
+    },
+    "media_communication": {
+      "display_name": "Media & communication",
+      "sources": [
+        "ebsco_communication_mass_media"
+      ]
+    },
+    "humanities": {
+      "display_name": "Humanities",
+      "sources": [
+        "ebsco_mla",
+        "ebsco_atla_religion"
+      ]
+    },
+    "sport_tourism": {
+      "display_name": "Sport / tourism",
+      "sources": [
+        "ebsco_sportdiscus",
+        "ebsco_hospitality_tourism"
+      ]
+    },
+    "grey_preprints": {
+      "display_name": "Grey literature & preprints",
+      "sources": [
+        "ethos",
+        "epmc_preprints"
+      ]
+    }
+  }
+}
