@@ -11,12 +11,14 @@ inst <- Sys.getenv("SCOPUS_INSTTOKEN")
 req <- request("https://api.elsevier.com/content/search/scopus") |>
   req_headers(`X-ELS-APIKey` = key, Accept = "application/json")
 if (nzchar(inst)) req <- req |> req_headers(`X-ELS-Insttoken` = inst)
-req <- req |> req_url_query(query = query, count = 1, view = "STANDARD") |> req_timeout(120)
-res <- req_perform(req, error = FALSE)
+req <- req |> req_url_query(query = query, count = 1, view = "STANDARD") |>
+  req_timeout(120) |>
+  req_error(is_error = function(resp) FALSE)
+res <- req_perform(req)
 status <- resp_status(res)
 body <- tryCatch(resp_body_json(res, simplifyVector = FALSE), error = function(e) list())
 total <- body[["search-results"]][["opensearch:totalResults"]]
-errors <- body[["service-error"]] %||% body[["error-response"]]
+errors <- body[["service-error"]] %||% body[["error-response"]] %||% body[["error"]]
 report <- list(status = status, query_characters = nchar(query), year_min = 2015,
                total_results = total, error = errors)
 dir.create("outputs/scopus", recursive = TRUE, showWarnings = FALSE)
