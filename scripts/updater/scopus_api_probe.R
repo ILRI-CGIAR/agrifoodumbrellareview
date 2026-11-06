@@ -79,7 +79,7 @@ save_state <- function() write_json(list(
   summaries=done,errors=errors,splits=splits),
   file.path(outdir,"search_probe.json"),pretty=TRUE,auto_unbox=TRUE,null="null")
 while(length(queue)>0L) {
-  if(attempts>=300L) {errors[[length(errors)+1L]]<-list(reason="Safety limit of 300 requests reached");break}
+  if(attempts>=360L) {errors[[length(errors)+1L]]<-list(reason="Safety limit of 360 requests reached");break}
   task <- queue[[1L]];queue <- queue[-1L];attempts <- attempts+1L
   query <- paste0("(",task$climate,") AND (",task$review,") AND (",task$agrifood,") AND PUBYEAR > 2014")
   req <- request("https://api.elsevier.com/content/search/scopus") |>
@@ -100,7 +100,7 @@ while(length(queue)>0L) {
   if(status==200L && !is.null(total)) {
     done[[length(done)+1L]] <- list(origin=task$origin,split_depth=task$split_depth,
       query_sha256=digest(query,algo="sha256",serialize=FALSE),
-      query_characters=nchar(query),total_results=as.integer(total))
+      query_characters=nchar(query),query=query,total_results=as.integer(total))
   } else {
     details <- tryCatch(resp_body_string(resp),error=function(e)"")
     if (status %in% c(400L,413L,414L) &&
@@ -134,7 +134,7 @@ while(length(queue)>0L) {
     }
   }
   save_state()
-  Sys.sleep(0.2)
+  Sys.sleep(0.05)
 }
 cat(sprintf("Counts completed: %d; partitions: %d; errors: %d; pending: %d\n",
   length(done),length(splits),length(errors),length(queue)))
