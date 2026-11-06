@@ -66,8 +66,8 @@ results <- list()
 for (i in seq_len(limit)) {
   query <- queries[[i]]
   req <- request("https://api.elsevier.com/content/search/scopus") |>
-    req_headers(\`X-ELS-APIKey\`=key, Accept="application/json")
-  if (nzchar(inst)) req <- req |> req_headers(\`X-ELS-Insttoken\`=inst)
+    req_headers(`X-ELS-APIKey`=key, Accept="application/json")
+  if (nzchar(inst)) req <- req |> req_headers(`X-ELS-Insttoken`=inst)
   req <- req |> req_url_query(query=query, count=1, view="STANDARD") |>
     req_timeout(90) |> req_error(is_error=function(resp) FALSE)
   resp <- tryCatch(req_perform(req), error=identity)
