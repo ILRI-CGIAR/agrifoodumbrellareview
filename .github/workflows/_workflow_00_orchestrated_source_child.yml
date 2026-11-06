@@ -1,0 +1,306 @@
+name: Workflow 00 orchestrated source child
+
+on:
+  workflow_call:
+    inputs:
+      source:
+        required: true
+        type: string
+      run_type:
+        required: true
+        type: string
+      query:
+        required: true
+        type: string
+      parent_run_id:
+        required: true
+        type: string
+      search_version:
+        required: true
+        type: string
+      additional_search_term:
+        required: false
+        default: ""
+        type: string
+      fortnightly_from_date:
+        required: false
+        default: ""
+        type: string
+      fortnightly_to_date:
+        required: false
+        default: ""
+        type: string
+      max_records:
+        required: false
+        default: "all"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  WORKFLOW00_ORCHESTRATOR_BRANCH: ${{ github.ref_name }}
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Resolve implementation branch
+        id: impl
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "branch=$WORKFLOW00_ORCHESTRATOR_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source implementation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.impl.outputs.branch }}
+          persist-credentials: false
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - name: Install R dependencies
+        shell: Rscript {0}
+        run: install.packages(c("httr2","jsonlite","digest","xml2"))
+
+      - name: Download authoritative parent search plan
+        uses: actions/download-artifact@v4
+        with:
+          name: workflow00-search-plan-${{ inputs.parent_run_id }}
+          run-id: ${{ inputs.parent_run_id }}
+          github-token: ${{ github.token }}
+          path: parent_search_plan
+
+      - name: Run source search
+        env:
+          SOURCE: ${{ inputs.source }}
+          RUN_TYPE: ${{ inputs.run_type }}
+          SEARCH_QUERY: ${{ inputs.query }}
+          LENS_API_TOKEN: ${{ secrets.LENS_API_TOKEN }}
+          SCOPUS_API_TOKEN: ${{ secrets.SCOPUS_API_TOKEN }}
+          SCOPUS_INSTTOKEN: ${{ secrets.SCOPUS_INSTTOKEN }}
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+          OPENALEX_API_TOKEN: ${{ secrets.OPENALEX_API_TOKEN }}
+          FORTNIGHTLY_FROM_DATE: ${{ inputs.fortnightly_from_date }}
+          FORTNIGHTLY_TO_DATE: ${{ inputs.fortnightly_to_date }}
+          WOS_STARTER_API: ${{ secrets.WOS_STARTER_API }}
+          EBSCO_EHOST_UID: ${{ secrets.EBSCO_EHOST_UID }}
+          EBSCO_EHOST_PWD: ${{ secrets.EBSCO_EHOST_PWD }}
+          MAX_RECORDS: ${{ inputs.max_records }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Read each query directly from the archived parent plan, not GitHub job outputs.
+          SEARCH_QUERY="$(Rscript -e 'x<-jsonlite::fromJSON("parent_search_plan/search_plan.json",simplifyVector=FALSE);s<-Sys.getenv("SOURCE");q<-x$source_queries[[s]];sel<-unlist(x$source_selection$selected_sources,use.names=FALSE);if(is.null(q)||!(s %in% sel)||!is.character(q)||length(q)!=1L||!nzchar(q))stop("Missing/unselected source query in parent W00 search plan",call.=FALSE);cat(q)')"
+          test -n "$SEARCH_QUERY"
+          # Preserve the exact archived query for later job steps (including search documentation).
+          printf 'SEARCH_QUERY<<W00_SEARCH_QUERY_EOF\n%s\nW00_SEARCH_QUERY_EOF\n' "$SEARCH_QUERY" >> "$GITHUB_ENV"
+          mkdir -p outputs/updater/source_child
+          case "$SOURCE" in
+            lens)
+              cp config/lens_search.json /tmp/lens_search.json
+              Rscript -e 'args <- commandArgs(trailingOnly=TRUE); q <- args[[1]]; p <- args[[2]]; x <- jsonlite::fromJSON(p, simplifyVector=FALSE); x$api_query$query$bool$must[[1]]$query_string$query <- q; jsonlite::write_json(x,p,auto_unbox=TRUE,pretty=TRUE)' "$SEARCH_QUERY" /tmp/lens_search.json
+              git fetch origin "$WORKFLOW00_ORCHESTRATOR_BRANCH"
+              git show origin/$WORKFLOW00_ORCHESTRATOR_BRANCH:scripts/updater/workflow_00_lens_orchestrated_search.R > /tmp/workflow_00_lens_orchestrated_search.R
+              if [ "$RUN_TYPE" = "full" ]; then
+                sentinel_arg=true
+              else
+                sentinel_arg=false
+              fi
+              Rscript /tmp/workflow_00_lens_orchestrated_search.R --config /tmp/lens_search.json --output outputs/updater/source_child/records.jsonl --manifest outputs/updater/source_child/manifest.json --audit-dir outputs/updater/source_child/audit --require-sentinel "$sentinel_arg"
+              ;;
+            scopus)
+              Rscript scripts/updater/workflow_00b_scopus_ingestion.R --query "$SEARCH_QUERY" --page-size 25 --view STANDARD --output-dir outputs/updater/source_child
+              ;;
+            openalex)
+              Rscript scripts/updater/workflow_00c_openalex_ingestion.R --query "$SEARCH_QUERY" --max-records all --page-size 100 --output-dir outputs/updater/source_child
+              ;;
+            agricola)
+              Rscript scripts/updater/workflow_00d_agricola_ingestion.R --query "$SEARCH_QUERY" --max-records all --page-size 100 --output-dir outputs/updater/source_child
+              agricola_n="$(Rscript -e 'x <- jsonlite::fromJSON("outputs/updater/source_child/manifest.json", simplifyVector=FALSE); vals <- c(x$records_retrieved, x$entries_retrieved, x$total_results_reported, x$reported_total); vals <- vals[!vapply(vals,is.null,logical(1))]; cat(if (length(vals)) as.integer(vals[[1]]) else 0L)')"
+              if [ "$agricola_n" -gt 0 ]; then
+                Rscript scripts/updater/workflow_01v_agricola_sidecar_adapter.R --input-dir outputs/updater/source_child --output-dir outputs/updater/source_child_sidecar
+              else
+                echo "AGRICOLA returned 0 records; skipping sidecar adaptation."
+                mkdir -p outputs/updater/source_child_sidecar
+                printf '{"source":"agricola","records":0,"status":"empty_harvest"}\n' > outputs/updater/source_child_sidecar/empty_harvest.json
+              fi
+              ;;
+            pubmed|ethos|cba|epmc_preprints)
+              case "$SOURCE" in
+                pubmed) code=MED; collection="PubMed/MEDLINE" ;;
+                ethos) code=ETH; collection="EThOS theses" ;;
+                cba) code=CBA; collection="Chinese Biological Abstracts" ;;
+                epmc_preprints) code=PPR; collection="Europe PMC preprints" ;;
+              esac
+              Rscript scripts/updater/workflow_00f_europe_pmc_source_ingestion.R                 --query "$SEARCH_QUERY"                 --source-code "$code"                 --source-slug "$SOURCE"                 --source-collection "$collection"                 --max-records all                 --page-size 100                 --output-dir outputs/updater/source_child
+              epmc_n="$(Rscript -e 'x <- jsonlite::fromJSON("outputs/updater/source_child/manifest.json", simplifyVector=FALSE); cat(if(is.null(x$records_retrieved))0L else as.integer(x$records_retrieved))')"
+              if [ "$epmc_n" -gt 0 ]; then
+                Rscript scripts/updater/workflow_01x_europe_pmc_sidecar_adapter.R                   --input-dir outputs/updater/source_child                   --output-dir outputs/updater/source_child_sidecar                   --source-code "$code"                   --source-slug "$SOURCE"                   --source-collection "$collection"
+              else
+                mkdir -p outputs/updater/source_child_sidecar
+                printf '{"source":"%s","records":0,"status":"empty_harvest"}\n' "$SOURCE" > outputs/updater/source_child_sidecar/empty_harvest.json
+              fi
+              ;;
+            wos)
+              if [ "$RUN_TYPE" = "fortnightly" ] || [ "$RUN_TYPE" = "monthly" ]; then
+                [ -n "$FORTNIGHTLY_FROM_DATE" ] && [ -n "$FORTNIGHTLY_TO_DATE" ] || { echo "Missing fortnightly date window for WoS" >&2; exit 2; }
+                Rscript scripts/updater/workflow_00e_wos_starter_ingestion.R --query "$SEARCH_QUERY" --modified-time-span "$FORTNIGHTLY_FROM_DATE+$FORTNIGHTLY_TO_DATE" --page-size 50 --start-page 1 --output-dir outputs/updater/source_child
+              else
+                Rscript scripts/updater/workflow_00e_wos_starter_ingestion.R --query "$SEARCH_QUERY" --page-size 50 --start-page 1 --output-dir outputs/updater/source_child
+              fi
+              Rscript scripts/updater/workflow_01w_wos_starter_sidecar_adapter.R --input-dir outputs/updater/source_child --output-dir outputs/updater/source_child_sidecar
+              ;;
+            ebsco_*)
+              Rscript scripts/updater/workflow_00g_ebsco_ingestion.R \
+                --source "$SOURCE" \
+                --query "$SEARCH_QUERY" \
+                --config config/workflow00_ebsco_sources.json \
+                --page-size 100 \
+                --max-records "$MAX_RECORDS" \
+                --output-dir outputs/updater/source_child
+              ;;
+          esac
+
+
+      - name: Seed native-ID registry for new Europe PMC source
+        if: ${{ inputs.run_type == 'full' && (inputs.source == 'pubmed' || inputs.source == 'ethos' || inputs.source == 'cba' || inputs.source == 'epmc_preprints') }}
+        env:
+          SOURCE: ${{ inputs.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/empty_native_ids.txt
+          Rscript scripts/updater/workflow_00_native_id_reconcile.R \
+            --source "$SOURCE" \
+            --run-type full \
+            --current-root outputs/updater/source_child \
+            --registry /tmp/empty_native_ids.txt \
+            --output-dir outputs/updater/source_delta
+          test -s outputs/updater/source_delta/reconciliation_manifest.json
+          test -f outputs/updater/source_delta/updated_native_ids.txt
+
+
+      - name: Seed native-ID registry for EBSCO source
+        if: ${{ inputs.run_type == 'full' && startsWith(inputs.source, 'ebsco_') }}
+        env:
+          SOURCE: ${{ inputs.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/empty_native_ids.txt
+          Rscript scripts/updater/workflow_00_ebsco_native_id_reconcile.R \
+            --source "$SOURCE" \
+            --run-type full \
+            --current-root outputs/updater/source_child \
+            --registry /tmp/empty_native_ids.txt \
+            --output-dir outputs/updater/source_delta
+          test -s outputs/updater/source_delta/reconciliation_manifest.json
+          test -f outputs/updater/source_delta/updated_native_ids.txt
+
+      - name: Reconcile fortnightly harvest by native source ID
+        if: ${{ inputs.run_type == 'fortnightly' || inputs.run_type == 'monthly' }}
+        env:
+          SOURCE: ${{ inputs.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry="data/workflow00/source_id_registry/${SOURCE}_native_ids.txt"
+          test -f "$registry"
+          if [[ "$SOURCE" == ebsco_* ]]; then
+            Rscript scripts/updater/workflow_00_ebsco_native_id_reconcile.R \
+              --source "$SOURCE" \
+              --run-type "${{ inputs.run_type }}" \
+              --current-root outputs/updater/source_child \
+              --registry "$registry" \
+              --output-dir outputs/updater/source_delta
+          else
+            Rscript scripts/updater/workflow_00_native_id_reconcile.R \
+              --source "$SOURCE" \
+              --run-type "${{ inputs.run_type }}" \
+              --current-root outputs/updater/source_child \
+              --registry "$registry" \
+              --output-dir outputs/updater/source_delta
+          fi
+          test -s outputs/updater/source_delta/reconciliation_manifest.json
+          test -f outputs/updater/source_delta/updated_native_ids.txt
+
+
+      - name: Extract source counts
+        id: counts
+        env:
+          SOURCE: ${{ inputs.source }}
+        shell: Rscript {0}
+        run: |
+          library(jsonlite)
+          x <- fromJSON("outputs/updater/source_child/manifest.json", simplifyVector=FALSE)
+          pick <- function(...) {
+            vals <- list(...)
+            for (v in vals) if (!is.null(v) && length(v)) return(as.integer(v[[1]]))
+            NA_integer_
+          }
+          reported <- pick(x$reported_total, x$unpartitioned_total, x$total_results_reported_by_openalex_first_page, x$total_results_reported_first_page, x$total_results_reported, x$validation$first_page_total_reported, x$validation$unpartitioned_total)
+          downloaded <- pick(x$records_retrieved, x$entries_retrieved, x$validation$records_recounted_from_raw, x$validation$records_tracked_during_harvest)
+          if (Sys.getenv("SOURCE")=="lens") {
+            reported <- pick(x$lens_reported_total, x$reported_total, x$total_reported)
+            downloaded <- pick(x$unique_records_written, x$raw_records_retrieved, x$records_written, x$records_retrieved)
+          }
+          if (is.na(reported) || is.na(downloaded)) stop("Could not derive reported/downloaded counts from source manifest")
+          cat(sprintf("reported=%d\n",reported),file=Sys.getenv("GITHUB_OUTPUT"),append=TRUE)
+          cat(sprintf("downloaded=%d\n",downloaded),file=Sys.getenv("GITHUB_OUTPUT"),append=TRUE)
+
+      - name: Write child search archive record
+        env:
+          SOURCE: ${{ inputs.source }}
+          RUN_TYPE: ${{ inputs.run_type }}
+          PARENT_RUN_ID: ${{ inputs.parent_run_id }}
+          SEARCH_VERSION: ${{ inputs.search_version }}
+          ADDITIONAL_SEARCH_TERM: ${{ inputs.additional_search_term }}
+          REPORTED: ${{ steps.counts.outputs.reported }}
+          DOWNLOADED: ${{ steps.counts.outputs.downloaded }}
+          FORTNIGHTLY_FROM_DATE: ${{ inputs.fortnightly_from_date }}
+          FORTNIGHTLY_TO_DATE: ${{ inputs.fortnightly_to_date }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          documented_query="$SEARCH_QUERY"
+          if [ "$SOURCE" = "ethos" ] && [ "$RUN_TYPE" = "full" ]; then
+            ADDITIONAL_SEARCH_TERM=""
+          fi
+          if [ "$SOURCE" = "wos" ] && { [ "$RUN_TYPE" = "fortnightly" ] || [ "$RUN_TYPE" = "monthly" ]; }; then
+            documented_query="$SEARCH_QUERY ; modifiedTimeSpan=$FORTNIGHTLY_FROM_DATE+$FORTNIGHTLY_TO_DATE"
+          fi
+          implementation_sha="$(git rev-parse HEAD)"
+          native_args=()
+          if [ "$RUN_TYPE" = "fortnightly" ] || [ "$RUN_TYPE" = "monthly" ]; then
+            known_native="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/updater/source_delta/reconciliation_manifest.json");cat(as.integer(x$already_known_native_ids))')"
+            new_native="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/updater/source_delta/reconciliation_manifest.json");cat(as.integer(x$new_native_ids))')"
+            native_args=(--known-native-results "$known_native" --new-native-results "$new_native")
+          fi
+          Rscript /tmp/write_workflow00_search_record.R --source "$SOURCE" --run-type "$RUN_TYPE" --query "$documented_query" --reported-results "$REPORTED" --downloaded-results "$DOWNLOADED" --parent-run-id "$PARENT_RUN_ID" --search-version "$SEARCH_VERSION" --additional-search-term "$ADDITIONAL_SEARCH_TERM" --artifact-name "workflow00-${SOURCE}-harvest-${PARENT_RUN_ID}" --orchestrator-sha "$implementation_sha" --source-handler-sha "$implementation_sha" --window-from "$FORTNIGHTLY_FROM_DATE" --window-to "$FORTNIGHTLY_TO_DATE" --source-manifest outputs/updater/source_child/manifest.json "${native_args[@]}" --output-root outputs/updater/search_record
+
+      - name: Upload source harvest
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow00-${{ inputs.source }}-harvest-${{ inputs.parent_run_id }}
+          path: |
+            outputs/updater/source_child/
+            outputs/updater/source_child_sidecar/
+            outputs/updater/source_delta/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload child search record
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow00-search-record-${{ inputs.source }}-${{ inputs.parent_run_id }}
+          path: outputs/updater/search_record/
+          retention-days: 7
+          if-no-files-found: error

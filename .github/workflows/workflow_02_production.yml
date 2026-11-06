@@ -1,0 +1,380 @@
+name: Workflow 02 - Production bibliographic enrichment and repair
+
+on:
+  workflow_call:
+    inputs:
+      workflow01_pointer_path:
+        required: true
+        type: string
+      previous_workflow02_pointer_path:
+        required: false
+        default: ''
+        type: string
+      limit:
+        required: false
+        default: '0'
+        type: string
+      recheck_after_days:
+        required: false
+        default: '90'
+        type: string
+      publish:
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      ZENODO_ACCESS_TOKEN:
+        required: true
+      SCOPUS_API_TOKEN:
+        required: true
+      SCOPUS_INSTTOKEN:
+        required: true
+  workflow_dispatch:
+    inputs:
+      workflow01_pointer_path:
+        description: 'Repository path to authoritative Workflow 01 Zenodo pointer'
+        required: true
+        type: string
+      previous_workflow02_pointer_path:
+        description: 'Previous Workflow 02 Zenodo pointer; blank for first run'
+        required: false
+        default: ''
+        type: string
+      limit:
+        description: 'Maximum records to attempt; 0 means all due records'
+        required: true
+        default: '0'
+        type: string
+      recheck_after_days:
+        description: 'Days before successful/no-result enrichment attempts are eligible again'
+        required: true
+        default: '90'
+        type: string
+      publish:
+        description: 'Publish cumulative Workflow 02 state to restricted Zenodo'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: workflow02-production
+  cancel-in-progress: false
+
+env:
+  WORKFLOW02_BRANCH: ${{ github.ref_name }}
+
+jobs:
+  workflow02:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout integration branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.WORKFLOW02_BRANCH }}
+          fetch-depth: 0
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - name: Install R dependencies
+        shell: Rscript {0}
+        run: install.packages(c('jsonlite','digest','httr2','readr','stringdist','data.table','googlesheets4'))
+
+      - name: Parse production scripts
+        shell: Rscript {0}
+        run: |
+          parse(file='scripts/updater/workflow_02_metadata_enrichment.R')
+          parse(file='scripts/updater/workflow_02_build_patch.R')
+          parse(file='scripts/updater/workflow_02_build_human_review.R')
+          parse(file='scripts/updater/workflow_build_review_email_payload.R')
+          parse(file='scripts/updater/workflow_01_send_review_email.R')
+          parse(file='scripts/updater/workflow_02_apply_patch.R')
+          parse(file='scripts/updater/workflow_02_merge_patches.R')
+          parse(file='scripts/updater/workflow_02_inventory_state.R')
+          parse(file='scripts/updater/workflow_02_restore_state_from_zenodo.R')
+          parse(file='scripts/updater/workflow_02_archive_state_to_zenodo.R')
+          parse(file='scripts/updater/workflow_02_update_zenodo_registry.R')
+          cat('PASS: Workflow 02 production scripts parse\n')
+
+      - name: Validate input pointers
+        env:
+          W01_POINTER: ${{ inputs.workflow01_pointer_path }}
+          PREV_W02_POINTER: ${{ inputs.previous_workflow02_pointer_path || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$W01_POINTER"
+          Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("W01_POINTER"));stopifnot(x$status=="published",x$state %in% c("final","delta"),x$visibility=="restricted")'
+          if [ -n "$PREV_W02_POINTER" ]; then
+            test -s "$PREV_W02_POINTER"
+            Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("PREV_W02_POINTER"));stopifnot(x$status=="published",x$workflow=="02",x$visibility=="restricted")'
+          fi
+
+      - name: Restore authoritative Workflow 01 canonical state
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          W01_POINTER: ${{ inputs.workflow01_pointer_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_ID="$(W01_POINTER="$W01_POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("W01_POINTER"),simplifyVector=FALSE);cat(x$github_run_id)')"
+          EXPECTED_SHA="$(W01_POINTER="$W01_POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("W01_POINTER"),simplifyVector=FALSE);cat(x$canonical_jsonl_sha256)')"
+          CACHE_OK=false
+          rm -rf workflow01_state workflow01_handoff
+          mkdir -p workflow01_handoff
+          if [ -n "$RUN_ID" ] && [ -n "$EXPECTED_SHA" ]; then
+            if gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "workflow01-handoff-$RUN_ID" --dir workflow01_handoff; then
+              P="$(find workflow01_handoff -type f -name records.jsonl -print -quit)"
+              if [ -n "$P" ]; then
+                ACTUAL_SHA="$(P="$P" Rscript -e 'library(digest);cat(digest(file=Sys.getenv("P"),algo="sha256",serialize=FALSE))')"
+                if [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ]; then
+                  mkdir -p workflow01_state/canonical
+                  cp "$P" workflow01_state/canonical/records.jsonl
+                  CACHE_OK=true
+                  echo "PASS: using verified 7-day Workflow 01 handoff artefact"
+                fi
+              fi
+            fi
+          fi
+          if [ "$CACHE_OK" != true ]; then
+            rm -rf workflow01_state
+            Rscript scripts/updater/workflow_01_restore_current_state.R \
+              --pointer "$W01_POINTER" \
+              --pointer-dir docs/deduplication/zenodo \
+              --output-root workflow01_state
+            echo "PASS: restored authoritative Workflow 01 state from Zenodo"
+          fi
+          test -s workflow01_state/canonical/records.jsonl
+          W01_SHA="$(Rscript -e "cat(digest::digest(file='workflow01_state/canonical/records.jsonl',algo='sha256',serialize=FALSE))")"
+          test "$W01_SHA" = "$EXPECTED_SHA"
+          echo "W01_SHA=$W01_SHA" >> "$GITHUB_ENV"
+
+      - name: Restore previous Workflow 02 state when supplied
+        if: ${{ inputs.previous_workflow02_pointer_path != '' }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+          PREV_W02_POINTER: ${{ inputs.previous_workflow02_pointer_path || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_02_restore_state_from_zenodo.R \
+            --pointer "$PREV_W02_POINTER" \
+            --output-dir previous_workflow02
+          P="$(find previous_workflow02 -name cumulative_patch.jsonl -type f -print -quit)"
+          test -n "$P"
+          cp "$P" previous_cumulative_patch.jsonl
+
+      - name: Apply previous Workflow 02 enrichment state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow02
+          if [ -s previous_cumulative_patch.jsonl ]; then
+            Rscript scripts/updater/workflow_02_apply_patch.R \
+              --input workflow01_state/canonical/records.jsonl \
+              --patch previous_cumulative_patch.jsonl \
+              --output outputs/workflow02/input_with_previous_state.jsonl \
+              --report outputs/workflow02/previous_patch_application.json \
+              --mode fill_missing
+          else
+            cp workflow01_state/canonical/records.jsonl outputs/workflow02/input_with_previous_state.jsonl
+            : > previous_cumulative_patch.jsonl
+          fi
+
+      - name: Run metadata enrichment and repair
+        env:
+          SCOPUS_API_TOKEN: ${{ secrets.SCOPUS_API_TOKEN }}
+          SCOPUS_INSTTOKEN: ${{ secrets.SCOPUS_INSTTOKEN }}
+          LIMIT: ${{ inputs.limit || '10' }}
+          RECHECK: ${{ inputs.recheck_after_days || '90' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARGS=(
+            --input outputs/workflow02/input_with_previous_state.jsonl
+            --output outputs/workflow02/enriched.jsonl
+            --audit outputs/workflow02/enrichment_audit.jsonl
+            --report outputs/workflow02/enrichment_report.json
+            --delay 0.2
+            --recheck-after-days "$RECHECK"
+          )
+          if [ "$LIMIT" != "0" ]; then ARGS+=(--limit "$LIMIT"); fi
+          Rscript scripts/updater/workflow_02_metadata_enrichment.R "${ARGS[@]}"
+
+      - name: Build current sparse patch and retry queue
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_02_build_patch.R \
+            --input outputs/workflow02/input_with_previous_state.jsonl \
+            --enriched outputs/workflow02/enriched.jsonl \
+            --audit outputs/workflow02/enrichment_audit.jsonl \
+            --enrichment-report outputs/workflow02/enrichment_report.json \
+            --patch outputs/workflow02/current_patch.jsonl \
+            --retry-queue outputs/workflow02/retry_queue.jsonl \
+            --report outputs/workflow02/current_patch_report.json
+
+      - name: Build Workflow 02 human-review package
+        id: human_review
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow02_human_review
+          Rscript scripts/updater/workflow_02_build_human_review.R \
+            --input outputs/workflow02/input_with_previous_state.jsonl \
+            --audit outputs/workflow02/enrichment_audit.jsonl \
+            --output-dir outputs/workflow02_human_review \
+            --status outputs/workflow02_human_review/status.json
+
+          REQUIRES="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow02_human_review/status.json");cat(tolower(as.character(x$requires_human_review)))')"
+          CASES="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow02_human_review/status.json");cat(as.integer(x$blocking_cases))')"
+          echo "requires_human_review=$REQUIRES" >> "$GITHUB_OUTPUT"
+          echo "blocking_cases=$CASES" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Workflow 02 human-review package
+        id: upload_review
+        if: ${{ steps.human_review.outputs.requires_human_review == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow02-human-review-${{ github.run_id }}
+          path: outputs/workflow02_human_review/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Stop for Workflow 02 human adjudication
+        if: ${{ steps.human_review.outputs.requires_human_review == 'true' }}
+        shell: bash
+        run: |
+          echo "::error::Workflow 02 requires human adjudication for ${{ steps.human_review.outputs.blocking_cases }} quarantined record(s). Review artifact: workflow02-human-review-${{ github.run_id }}"
+          exit 1
+
+      - name: Verify current patch exact replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_02_apply_patch.R \
+            --input outputs/workflow02/input_with_previous_state.jsonl \
+            --patch outputs/workflow02/current_patch.jsonl \
+            --output outputs/workflow02/current_patch_replayed.jsonl \
+            --report outputs/workflow02/current_patch_replay.json \
+            --mode exact
+          Rscript -e "library(digest);stopifnot(digest(file='outputs/workflow02/current_patch_replayed.jsonl',algo='sha256',serialize=FALSE)==digest(file='outputs/workflow02/enriched.jsonl',algo='sha256',serialize=FALSE));cat('PASS: current Workflow 02 patch reproduces enrichment output exactly\n')"
+
+      - name: Merge cumulative Workflow 02 state
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_02_merge_patches.R \
+            --previous previous_cumulative_patch.jsonl \
+            --current outputs/workflow02/current_patch.jsonl \
+            --output outputs/workflow02/cumulative_patch.jsonl
+
+      - name: Verify cumulative patch against pristine Workflow 01
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_02_apply_patch.R \
+            --input workflow01_state/canonical/records.jsonl \
+            --patch outputs/workflow02/cumulative_patch.jsonl \
+            --output outputs/workflow02/reconstructed_enriched.jsonl \
+            --report outputs/workflow02/cumulative_patch_replay.json \
+            --mode fill_missing
+          Rscript -e "library(digest);a<-digest(file='outputs/workflow02/reconstructed_enriched.jsonl',algo='sha256',serialize=FALSE);b<-digest(file='outputs/workflow02/enriched.jsonl',algo='sha256',serialize=FALSE);stopifnot(a==b);cat('PASS: cumulative Workflow 02 patch reconstructs final enriched canonical JSONL exactly\n')"
+
+      - name: Inventory final enriched canonical state
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_02_inventory_state.R \
+            --input outputs/workflow02/enriched.jsonl \
+            --report outputs/workflow02/final_inventory.json \
+            --missing-both-queue outputs/workflow02/missing_both_queue.jsonl
+
+      - name: Build durable sparse state directory
+        env:
+          W01_POINTER: ${{ inputs.workflow01_pointer_path }}
+          PREV_W02_POINTER: ${{ inputs.previous_workflow02_pointer_path || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow02_state
+          cp outputs/workflow02/cumulative_patch.jsonl outputs/workflow02_state/
+          cp outputs/workflow02/enrichment_audit.jsonl outputs/workflow02_state/
+          cp outputs/workflow02/enrichment_report.json outputs/workflow02_state/
+          cp outputs/workflow02/current_patch_report.json outputs/workflow02_state/
+          cp outputs/workflow02/retry_queue.jsonl outputs/workflow02_state/
+          cp outputs/workflow02/final_inventory.json outputs/workflow02_state/
+          cp outputs/workflow02/missing_both_queue.jsonl outputs/workflow02_state/
+          cp outputs/workflow02/cumulative_patch_replay.json outputs/workflow02_state/
+          Rscript -e "library(jsonlite);x<-list(schema='living-evidence-map-workflow02-state-manifest-v1',workflow='02',repairable_fields=c('title','abstract','author_keywords'),github_run_id=Sys.getenv('GITHUB_RUN_ID'),workflow01_pointer=Sys.getenv('W01_POINTER'),workflow01_canonical_sha256=Sys.getenv('W01_SHA'),previous_workflow02_pointer=if(nzchar(Sys.getenv('PREV_W02_POINTER')))Sys.getenv('PREV_W02_POINTER') else NULL,final_enriched_sha256=digest::digest(file='outputs/workflow02/enriched.jsonl',algo='sha256',serialize=FALSE),created_at_utc=format(Sys.time(),tz='UTC',format='%Y-%m-%dT%H:%M:%SZ'));writeLines(toJSON(x,auto_unbox=TRUE,pretty=TRUE,null='null'),'outputs/workflow02_state/state_manifest.json')"
+
+      - name: Publish sparse Workflow 02 state to restricted Zenodo
+        if: ${{ inputs.publish == true }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+          PREV_W02_POINTER: ${{ inputs.previous_workflow02_pointer_path || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow02_zenodo
+          ARGS=(
+            --state-dir outputs/workflow02_state
+            --run-id "$GITHUB_RUN_ID"
+            --repository "$GITHUB_REPOSITORY"
+            --output-dir outputs/workflow02_zenodo
+            --workflow01-canonical-sha256 "$W01_SHA"
+          )
+          if [ -n "$PREV_W02_POINTER" ]; then ARGS+=(--previous-pointer "$PREV_W02_POINTER"); fi
+          Rscript scripts/updater/workflow_02_archive_state_to_zenodo.R "${ARGS[@]}"
+
+      - name: Register published Workflow 02 state
+        if: ${{ inputs.publish == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_02_update_zenodo_registry.R \
+            --receipt outputs/workflow02_zenodo/zenodo_receipt.json \
+            --registry docs/enrichment/zenodo_registry.csv \
+            --pointer-dir docs/enrichment/zenodo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/enrichment/zenodo_registry.csv docs/enrichment/zenodo/run-"$GITHUB_RUN_ID".json
+          if ! git diff --cached --quiet; then
+            git commit -m "Register Workflow 02 enrichment state run $GITHUB_RUN_ID"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
+
+      - name: Upload validated Workflow 02 handoff cache
+        if: ${{ inputs.publish == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow02-handoff-${{ github.run_id }}
+          path: |
+            outputs/workflow02/enriched.jsonl
+            outputs/workflow02_state/state_manifest.json
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload compact Workflow 02 operational state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow02-production-state-${{ github.run_id }}
+          path: |
+            outputs/workflow02_state/
+            outputs/workflow02/current_patch.jsonl
+            outputs/workflow02/current_patch_report.json
+            outputs/workflow02/retry_queue.jsonl
+            outputs/workflow02_zenodo/zenodo_receipt.json
+          retention-days: 90
+          if-no-files-found: warn

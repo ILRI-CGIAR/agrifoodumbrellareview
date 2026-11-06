@@ -1,0 +1,886 @@
+name: Workflow 00 - Search orchestrator
+
+on:
+  workflow_call:
+    inputs:
+      run_type:
+        required: true
+        type: string
+      group_core_multidisciplinary:
+        required: false
+        default: true
+        type: boolean
+      group_health_medicine:
+        required: false
+        default: false
+        type: boolean
+      group_environment_agriculture:
+        required: false
+        default: false
+        type: boolean
+      group_social_sciences:
+        required: false
+        default: false
+        type: boolean
+      group_education:
+        required: false
+        default: false
+        type: boolean
+      group_regional:
+        required: false
+        default: false
+        type: boolean
+      group_media_communication:
+        required: false
+        default: false
+        type: boolean
+      group_humanities:
+        required: false
+        default: false
+        type: boolean
+      group_sport_tourism:
+        required: false
+        default: false
+        type: boolean
+      group_grey_preprints:
+        required: false
+        default: false
+        type: boolean
+      additional_sources:
+        required: false
+        default: ''
+        type: string
+      exclude_sources:
+        required: false
+        default: ''
+        type: string
+      additional_search_term:
+        required: false
+        default: ''
+        type: string
+      new_full_sources:
+        required: false
+        default: ''
+        type: string
+      resume_run_id:
+        required: false
+        default: ''
+        type: string
+      supersede_incomplete_update:
+        required: false
+        default: false
+        type: boolean
+
+  workflow_dispatch:
+    inputs:
+      run_type:
+        description: 'Run mode'
+        required: true
+        type: choice
+        options:
+          - full
+          - fortnightly
+          - monthly
+          - expansion
+      group_core_multidisciplinary:
+        description: 'Core multidisciplinary — Lens, Scopus, WoS, OpenAlex'
+        required: true
+        default: true
+        type: boolean
+      group_health_medicine:
+        description: 'Health & medicine — PubMed, MEDLINE, CINAHL, AMED, PsycInfo'
+        required: true
+        default: false
+        type: boolean
+      group_environment_agriculture:
+        description: 'Environment & agriculture — AGRICOLA, CBA, BAI Plus, GreenFILE, Waters & Oceans'
+        required: true
+        default: false
+        type: boolean
+      group_social_sciences:
+        description: 'Social sciences — PsycInfo, EconLit, Political Science, Family & Society'
+        required: true
+        default: false
+        type: boolean
+      group_education:
+        description: 'Education — ERIC, PsycInfo'
+        required: true
+        default: false
+        type: boolean
+      group_regional:
+        description: 'Regional — Africa-Wide, Chinese Biological Abstracts'
+        required: true
+        default: false
+        type: boolean
+      group_media_communication:
+        description: 'Media & communication — Communication & Mass Media'
+        required: true
+        default: false
+        type: boolean
+      group_humanities:
+        description: 'Humanities — MLA, Atla Religion'
+        required: true
+        default: false
+        type: boolean
+      group_sport_tourism:
+        description: 'Sport / tourism — SPORTDiscus, Hospitality & Tourism'
+        required: true
+        default: false
+        type: boolean
+      group_grey_preprints:
+        description: 'Grey literature & preprints — EThOS, Europe PMC preprints'
+        required: true
+        default: false
+        type: boolean
+      additional_sources:
+        description: 'Optional extra source slugs, comma-separated'
+        required: false
+        default: ''
+        type: string
+      exclude_sources:
+        description: 'Optional source slugs to exclude, comma-separated'
+        required: false
+        default: ''
+        type: string
+      additional_search_term:
+        description: 'Expansion only: add one search term to the farm/aquaculture concept'
+        required: false
+        default: ''
+        type: string
+      new_full_sources:
+        description: 'Expansion only: first-time full source (ethos)'
+        required: false
+        default: ''
+        type: string
+      supersede_incomplete_update:
+        description: 'Explicitly abandon an incomplete current update and start a new W00 run'
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: workflow00-search-orchestrator
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  WORKFLOW00_ORCHESTRATOR_BRANCH: ${{ github.ref_name }}
+
+jobs:
+  validate-and-plan:
+    runs-on: ubuntu-latest
+    outputs:
+      search_version: ${{ steps.out.outputs.search_version }}
+      fortnightly_from_date: ${{ steps.out.outputs.fortnightly_from_date }}
+      fortnightly_to_date: ${{ steps.out.outputs.fortnightly_to_date }}
+      selected_sources_csv: ${{ steps.selection.outputs.selected_sources_csv }}
+      selected_sources_json: ${{ steps.selection.outputs.selected_sources_json }}
+      source_matrix_json: ${{ steps.out.outputs.source_matrix_json }}
+    steps:
+      - name: Validate run mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          case '${{ inputs.run_type }}' in
+            full|fortnightly|monthly|expansion) ;;
+            *) echo 'Unsupported Workflow 00 run type' >&2; exit 2 ;;
+          esac
+
+      - name: Checkout Workflow 00 orchestration branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.WORKFLOW00_ORCHESTRATOR_BRANCH }}
+          persist-credentials: false
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - name: Install R dependency
+        shell: Rscript {0}
+        run: install.packages('jsonlite')
+
+      - name: Refuse overlapping pipeline update
+        env:
+          SUPERSEDE_INCOMPLETE: ${{ inputs.supersede_incomplete_update }}
+          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+        shell: Rscript {0}
+        run: |
+          status_path <- "docs/current_run/current_run_status.json"
+          if (!file.exists(status_path)) {
+            cat("PASS: no existing current-run status; W00 may start\n")
+            quit(status=0)
+          }
+
+          x <- jsonlite::fromJSON(status_path,simplifyVector=FALSE)
+          completed <- suppressWarnings(as.integer(x$progress$completed_through))
+          active <- x$progress$active_position
+          is_complete <- !is.na(completed) && completed >= 11L &&
+            (is.null(active) || !length(active))
+
+          supersede <- identical(tolower(Sys.getenv("SUPERSEDE_INCOMPLETE")),"true")
+          resume_id <- trimws(Sys.getenv("RESUME_RUN_ID"))
+
+          if (is_complete) {
+            cat("PASS: previous pipeline update is complete; W00 may start\n")
+          } else if (nzchar(resume_id)) {
+            cat("PASS: explicit W00 resume requested; overlap guard bypassed for resume\n")
+          } else if (supersede) {
+            cat("PASS: explicit supersede authorised for incomplete update ",
+                as.character(x$update_id), "\n", sep="")
+          } else {
+            stop(
+              "A pipeline update is already incomplete (",
+              as.character(x$update_id),
+              "). Refusing to spend search/API resources on an overlapping update. ",
+              "Resume it or explicitly set supersede_incomplete_update=true.",
+              call.=FALSE
+            )
+          }
+
+      - name: Resolve and freeze source selection
+        id: selection
+        env:
+          W00_GROUP_CORE_MULTIDISCIPLINARY: ${{ inputs.group_core_multidisciplinary }}
+          W00_GROUP_HEALTH_MEDICINE: ${{ inputs.group_health_medicine }}
+          W00_GROUP_ENVIRONMENT_AGRICULTURE: ${{ inputs.group_environment_agriculture }}
+          W00_GROUP_SOCIAL_SCIENCES: ${{ inputs.group_social_sciences }}
+          W00_GROUP_EDUCATION: ${{ inputs.group_education }}
+          W00_GROUP_REGIONAL: ${{ inputs.group_regional }}
+          W00_GROUP_MEDIA_COMMUNICATION: ${{ inputs.group_media_communication }}
+          W00_GROUP_HUMANITIES: ${{ inputs.group_humanities }}
+          W00_GROUP_SPORT_TOURISM: ${{ inputs.group_sport_tourism }}
+          W00_GROUP_GREY_PREPRINTS: ${{ inputs.group_grey_preprints }}
+          W00_ADDITIONAL_SOURCES: ${{ inputs.additional_sources }}
+          W00_NEW_FULL_SOURCES: ${{ inputs.new_full_sources }}
+          W00_EXCLUDE_SOURCES: ${{ inputs.exclude_sources }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_00_resolve_source_selection.R \
+            --run-type '${{ inputs.run_type }}' \
+            --saved data/workflow00/source_selection.json \
+            --output outputs/updater/workflow00_plan/source_selection.json \
+            --ebsco-config config/workflow00_ebsco_sources.json \
+            --group-config config/workflow00_source_groups.json
+
+      - name: Validate search controls and write source queries
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_00_search_orchestrator.R \
+            --run-type '${{ inputs.run_type }}' \
+            --additional-search-term '${{ inputs.additional_search_term }}' \
+            --config user_input/workflow00_search_strategy.json \
+            --output-dir outputs/updater/workflow00_plan
+
+      - name: Validate monthly source roster, coverage and query plan
+        if: ${{ inputs.run_type == 'monthly' }}
+        shell: Rscript {0}
+        run: |
+          library(jsonlite)
+          p <- fromJSON('outputs/updater/workflow00_plan/search_plan.json',simplifyVector=FALSE)
+          s <- fromJSON('outputs/updater/workflow00_plan/source_selection.json',simplifyVector=FALSE)
+          src <- as.character(unlist(s$selected_sources,use.names=FALSE))
+          stopifnot(
+            identical(p$run_type,'monthly'),
+            length(src)==19L,
+            !anyDuplicated(src),
+            all(src %in% names(p$source_queries)),
+            'maricultur*' %in% unlist(p$base_farm_terms,use.names=FALSE),
+            !is.null(p$monthly_window$from),
+            !is.null(p$monthly_window$to),
+            as.Date(p$monthly_window$from)<=as.Date(p$monthly_window$to)
+          )
+          `%||%` <- function(x,y) if(is.null(x)) y else x
+          manual_path <- 'user_input/monthly_manual_ris.json'
+          if (file.exists(manual_path)) {
+            manual <- tryCatch(fromJSON(manual_path,simplifyVector=FALSE),error=function(e) NULL)
+            if (is.null(manual)) {
+              warning('Monthly manual DOI file is malformed; manual inputs will be skipped')
+            } else {
+              for (source in c('cab','proquest')) {
+                doi <- as.character(manual$sources[[source]]$zenodo_doi %||% '')
+                message(sprintf('Optional %s DOI: %s',source,if(nzchar(doi)) doi else 'not supplied'))
+              }
+            }
+          } else message('No monthly manual DOI file; optional sources skipped')
+          queries <- vapply(src,function(id) as.character(p$source_queries[[id]]),character(1))
+          if(any(!grepl('maricultur',queries,fixed=TRUE))) stop('Monthly query missing mariculture term',call.=FALSE)
+          cat(sprintf('PASS: monthly preflight %d API databases, %s through %s; all queries include maricultur*\\n',
+                      length(src),p$monthly_window$from,p$monthly_window$to))
+
+      - name: Record selected databases
+        shell: Rscript {0}
+        run: |
+          library(jsonlite)
+          p <- 'outputs/updater/workflow00_plan/search_plan.json'
+          s <- 'outputs/updater/workflow00_plan/source_selection.json'
+          x <- fromJSON(p, simplifyVector=FALSE)
+          sel <- unlist(fromJSON(s, simplifyVector=FALSE)$selected_sources,use.names=FALSE)
+          all_sources <- names(x$source_queries)
+          x$selected_databases <- setNames(as.list(all_sources %in% sel),all_sources)
+          x$source_selection <- fromJSON(s,simplifyVector=FALSE)
+          writeLines(toJSON(x,auto_unbox=TRUE,pretty=TRUE,null='null'),p)
+
+      - name: Export source queries
+        id: out
+        shell: Rscript {0}
+        run: |
+          library(jsonlite)
+          p <- fromJSON('outputs/updater/workflow00_plan/search_plan.json')
+          q <- p$source_queries
+          emit <- function(name,value) {
+            cat(sprintf('%s<<EOF\n%s\nEOF\n',name,value),file=Sys.getenv('GITHUB_OUTPUT'),append=TRUE)
+          }
+          emit('search_version',p$search_version)
+          emit('fortnightly_from_date', if (!is.null(p$monthly_window)) p$monthly_window$from else if (is.null(p$fortnightly_window)) '' else p$fortnightly_window$from)
+          emit('fortnightly_to_date', if (!is.null(p$monthly_window)) p$monthly_window$to else if (is.null(p$fortnightly_window)) '' else p$fortnightly_window$to)
+          s <- fromJSON('outputs/updater/workflow00_plan/source_selection.json', simplifyVector=FALSE)
+          sel <- unlist(s$selected_sources,use.names=FALSE)
+          missing <- setdiff(sel,names(q))
+          if (length(missing)) stop(sprintf('Selected source(s) lack generated query: %s',paste(missing,collapse=', ')))
+          matrix <- lapply(sel,function(src) list(source=src))
+          emit('source_matrix_json',toJSON(matrix,auto_unbox=TRUE,null='null'))
+
+      - name: Upload Workflow 00 plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow00-search-plan-${{ github.run_id }}
+          path: outputs/updater/workflow00_plan/
+          retention-days: 7
+          if-no-files-found: error
+
+
+  search-sources:
+    needs: validate-and-plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.validate-and-plan.outputs.source_matrix_json) }}
+    uses: ./.github/workflows/_workflow_00_orchestrated_source_child.yml
+    with:
+      source: ${{ matrix.source }}
+      run_type: ${{ inputs.run_type == 'expansion' && matrix.source == 'ethos' && inputs.new_full_sources == 'ethos' && 'full' || inputs.run_type }}
+      query: ''
+      parent_run_id: ${{ github.run_id }}
+      search_version: ${{ needs.validate-and-plan.outputs.search_version }}
+      fortnightly_from_date: ${{ needs.validate-and-plan.outputs.fortnightly_from_date }}
+      fortnightly_to_date: ${{ needs.validate-and-plan.outputs.fortnightly_to_date }}
+      additional_search_term: ${{ inputs.run_type == 'expansion' && matrix.source == 'ethos' && inputs.new_full_sources == 'ethos' && '' || inputs.additional_search_term }}
+    secrets: inherit
+
+  reconcile-expansion:
+    needs: [validate-and-plan, search-sources]
+    if: ${{ always() && inputs.run_type == 'expansion' && needs.validate-and-plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      SELECTED_SOURCES: ${{ needs.validate-and-plan.outputs.selected_sources_csv }}
+    steps:
+      - name: Ensure selected expansion searches succeeded
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ '${{ needs.search-sources.result }}' != 'success' ]; then
+            echo "One or more selected source searches did not succeed: ${{ needs.search-sources.result }}" >&2
+            exit 1
+          fi
+
+      - name: Checkout Workflow 00 orchestration branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.WORKFLOW00_ORCHESTRATOR_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - name: Install R dependency
+        shell: Rscript {0}
+        run: install.packages('jsonlite')
+
+      - name: Download current expansion harvests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p expansion_current
+          IFS=',' read -ra SOURCES <<< "$SELECTED_SOURCES"
+          for source in "${SOURCES[@]}"; do
+            case ",$SELECTED_SOURCES," in
+              *",$source,"*) ;;
+              *) continue ;;
+            esac
+            if [ "$source" = "ethos" ] && [ '${{ inputs.new_full_sources }}' = "ethos" ]; then
+              echo "EThOS is a first-time full search, not an expansion reconciliation source"
+              continue
+            fi
+            mkdir -p "expansion_current/$source"
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "workflow00-${source}-harvest-${GITHUB_RUN_ID}" \
+              --dir "expansion_current/$source"
+          done
+
+      - name: Build historical native-ID inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p expansion_history
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | [.id,.name,.workflow_run.id] | @tsv' > /tmp/all_artifacts.tsv
+
+          matches_source() {
+            local source="$1" name="$2"
+            case "$source" in
+              scopus) [[ "$name" == workflow00-scopus-harvest-* || "$name" == scopus-full-search-* ]] ;;
+              openalex) [[ "$name" == workflow00-openalex-harvest-* || "$name" == openalex-full-search-* ]] ;;
+              agricola) [[ "$name" == workflow00-agricola-harvest-* || "$name" == agricola-full-search-* ]] ;;
+              wos) [[ "$name" == workflow00-wos-harvest-* || "$name" == wos-starter-full-search-* ]] ;;
+              *) [[ "$name" == workflow00-${source}-harvest-* ]] ;;
+            esac
+          }
+
+          IFS=',' read -ra SOURCES <<< "$SELECTED_SOURCES"
+          for source in "${SOURCES[@]}"; do
+            case ",$SELECTED_SOURCES," in
+              *",$source,"*) ;;
+              *) continue ;;
+            esac
+            if [ "$source" = "ethos" ] && [ '${{ inputs.new_full_sources }}' = "ethos" ]; then
+              echo "EThOS is a first-time full search, not an expansion reconciliation source"
+              continue
+            fi
+            mkdir -p "expansion_history/$source"
+
+            registry="data/workflow00/source_id_registry/${source}_native_ids.txt"
+            if [ -f "$registry" ]; then
+              # An existing zero-byte file is an authoritative zero-result registry.
+              cp "$registry" "expansion_history/$source/known_native_ids.txt"
+              echo "Using persistent registry for $source"
+              continue
+            fi
+
+            echo "Seeding first $source registry from preserved harvest artefacts"
+            while IFS="$(printf '\t')" read -r id name run_id; do
+              [ -n "$id" ] || continue
+              [ "$name" != "workflow00-${source}-harvest-${GITHUB_RUN_ID}" ] || continue
+              if matches_source "$source" "$name"; then
+                dest="expansion_history/$source/artifact-$id"
+                mkdir -p "$dest"
+                echo "Downloading historical $source artefact: $name"
+                gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "$name" --dir "$dest"
+              fi
+            done < /tmp/all_artifacts.tsv
+
+            if [ "$source" = "lens" ] && ! find "expansion_history/lens" -type f -name 'records.jsonl' -print -quit | grep -q .; then
+              git fetch origin canonical-fresh-2026-09-08-v1
+              git show origin/canonical-fresh-2026-09-08-v1:data/canonical/current/repair/records.jsonl > expansion_history/lens/records.jsonl
+              echo "Seeded Lens IDs from canonical fresh full harvest"
+            fi
+          done
+
+      - name: Reconcile expansion by native source ID
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/updater/expansion_reconciliation
+          IFS=',' read -ra SOURCES <<< "$SELECTED_SOURCES"
+          for source in "${SOURCES[@]}"; do
+            case ",$SELECTED_SOURCES," in
+              *",$source,"*) ;;
+              *) continue ;;
+            esac
+            if [ "$source" = "ethos" ] && [ '${{ inputs.new_full_sources }}' = "ethos" ]; then
+              echo "EThOS is a first-time full search, not an expansion reconciliation source"
+              continue
+            fi
+            out="outputs/updater/expansion_reconciliation/$source"
+            if [[ "$source" == ebsco_* ]]; then
+              registry="expansion_history/$source/known_native_ids.txt"
+              test -f "$registry"
+              Rscript scripts/updater/workflow_00_ebsco_native_id_reconcile.R \
+                --source "$source" \
+                --run-type expansion \
+                --current-root "expansion_current/$source" \
+                --registry "$registry" \
+                --output-dir "$out"
+            else
+              Rscript scripts/updater/workflow_00_expansion_native_id_reconcile.R \
+                --source "$source" \
+                --current-root "expansion_current/$source" \
+                --history-root "expansion_history/$source" \
+                --output-dir "$out"
+            fi
+
+            mkdir -p outputs/updater/expansion_archive/data/workflow00/source_id_registry
+            cp "$out/updated_native_ids.txt" \
+              "outputs/updater/expansion_archive/data/workflow00/source_id_registry/${source}_native_ids.txt"
+
+            mkdir -p "outputs/updater/expansion_archive/docs/search_record/ad_hoc/reconciliation/${GITHUB_RUN_ID}"
+            cp "$out/reconciliation_manifest.json" \
+              "outputs/updater/expansion_archive/docs/search_record/ad_hoc/reconciliation/${GITHUB_RUN_ID}/${source}_reconciliation.json"
+          done
+
+      - name: Write consolidated expansion reconciliation summary
+        shell: Rscript {0}
+        run: |
+          library(jsonlite)
+          files <- list.files(
+            'outputs/updater/expansion_reconciliation',
+            pattern='reconciliation_manifest\\.json$',
+            recursive=TRUE,
+            full.names=TRUE
+          )
+          stopifnot(length(files) >= 1L)
+          x <- lapply(files,fromJSON,simplifyVector=FALSE)
+          summary <- list(
+            workflow='00_expansion_reconciliation',
+            status='success',
+            parent_run_id=Sys.getenv('GITHUB_RUN_ID'),
+            additional_search_term='${{ inputs.additional_search_term }}',
+            sources=x,
+            matching_policy='exact native source identifier only',
+            downstream_bibliographic_deduplication='Workflow 01'
+          )
+          dir.create(
+            'outputs/updater/expansion_archive/docs/search_record/ad_hoc/reconciliation',
+            recursive=TRUE,
+            showWarnings=FALSE
+          )
+          writeLines(
+            toJSON(summary,auto_unbox=TRUE,pretty=TRUE,null='null'),
+            sprintf(
+              'outputs/updater/expansion_archive/docs/search_record/ad_hoc/reconciliation/%s_summary.json',
+              Sys.getenv('GITHUB_RUN_ID')
+            )
+          )
+
+      - name: Upload expansion reconciliation artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow00-expansion-reconciliation-${{ github.run_id }}
+          path: |
+            outputs/updater/expansion_reconciliation/
+            outputs/updater/expansion_archive/
+          retention-days: 7
+          if-no-files-found: error
+
+  archive-search-records:
+    needs: [validate-and-plan, search-sources, reconcile-expansion]
+    if: ${{ always() && needs.validate-and-plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      SELECTED_SOURCES: ${{ needs.validate-and-plan.outputs.selected_sources_csv }}
+    steps:
+      - name: Ensure selected child searches and reconciliation succeeded
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ '${{ needs.search-sources.result }}' != 'success' ]; then
+            echo "One or more selected child searches did not succeed: ${{ needs.search-sources.result }}" >&2
+            exit 1
+          fi
+          if [ '${{ inputs.run_type }}' = 'expansion' ] && [ '${{ needs.reconcile-expansion.result }}' != 'success' ]; then
+            echo "Expansion reconciliation did not succeed: ${{ needs.reconcile-expansion.result }}" >&2
+            exit 1
+          fi
+
+      - name: Checkout documentation branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.WORKFLOW00_ORCHESTRATOR_BRANCH }}
+          fetch-depth: 0
+
+      - name: Download Workflow 00 plan
+        uses: actions/download-artifact@v4
+        with:
+          name: workflow00-search-plan-${{ github.run_id }}
+          path: downloaded_plan
+
+      - name: Download child search records
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p downloaded_search_records
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern "workflow00-search-record-*-${GITHUB_RUN_ID}" \
+            --dir downloaded_search_records
+          if ! find downloaded_search_records -type f -print -quit | grep -q .; then
+            echo "No child search-record files were downloaded." >&2
+            exit 1
+          fi
+
+      - name: Download expansion reconciliation archive
+        if: ${{ inputs.run_type == 'expansion' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: workflow00-expansion-reconciliation-${{ github.run_id }}
+          path: downloaded_expansion_reconciliation
+
+      - name: Download fortnightly native-ID reconciliation outputs
+        if: ${{ inputs.run_type == 'fortnightly' || inputs.run_type == 'monthly' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p downloaded_fortnightly
+          IFS=',' read -ra SOURCES <<< "$SELECTED_SOURCES"
+          for source in "${SOURCES[@]}"; do
+            case ",$SELECTED_SOURCES," in
+              *",$source,"*) ;;
+              *) continue ;;
+            esac
+            dest="downloaded_fortnightly/$source"
+            mkdir -p "$dest"
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "workflow00-${source}-harvest-$GITHUB_RUN_ID" \
+              --dir "$dest"
+            test -s "$dest/source_delta/reconciliation_manifest.json"
+            test -f "$dest/source_delta/updated_native_ids.txt"
+          done
+
+      - name: Download full-run native-ID seeds for sources requiring registries
+        if: ${{ inputs.run_type == 'full' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p downloaded_full_native
+          IFS=',' read -ra SOURCES <<< "$SELECTED_SOURCES"
+          for source in "${SOURCES[@]}"; do
+            case ",$SELECTED_SOURCES," in
+              *",$source,"*) ;;
+              *) continue ;;
+            esac
+            dest="downloaded_full_native/$source"
+            mkdir -p "$dest"
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "workflow00-${source}-harvest-$GITHUB_RUN_ID" \
+              --dir "$dest"
+            if [ -d "$dest/source_delta" ]; then
+              test -s "$dest/source_delta/reconciliation_manifest.json"
+              test -f "$dest/source_delta/updated_native_ids.txt"
+            fi
+          done
+
+      - name: Archive search records and source-ID registries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docs/search_record
+          cp -R downloaded_search_records/* docs/search_record/
+
+          if [ '${{ inputs.run_type }}' = 'expansion' ]; then
+            cp -R downloaded_expansion_reconciliation/expansion_archive/docs/* docs/
+            mkdir -p data/workflow00/source_id_registry
+            cp -R downloaded_expansion_reconciliation/expansion_archive/data/workflow00/source_id_registry/* \
+              data/workflow00/source_id_registry/
+          fi
+
+          if [ '${{ inputs.run_type }}' = 'full' ]; then
+            mkdir -p data/workflow00/source_id_registry
+            test -s downloaded_plan/source_selection.json
+            cp downloaded_plan/source_selection.json data/workflow00/source_selection.json
+            IFS=',' read -ra SOURCES <<< "$SELECTED_SOURCES"
+          for source in "${SOURCES[@]}"; do
+              src="downloaded_full_native/$source/source_delta"
+              [ -d "$src" ] || continue
+              cp "$src/updated_native_ids.txt" "data/workflow00/source_id_registry/${source}_native_ids.txt"
+              mkdir -p "docs/search_record/full/reconciliation/$GITHUB_RUN_ID"
+              cp "$src/reconciliation_manifest.json" \
+                "docs/search_record/full/reconciliation/$GITHUB_RUN_ID/${source}_reconciliation.json"
+            done
+          fi
+
+          if [ '${{ inputs.run_type }}' = 'fortnightly' ] || [ '${{ inputs.run_type }}' = 'monthly' ]; then
+            mkdir -p data/workflow00/source_id_registry
+            mkdir -p "docs/search_record/fortnightly_update/reconciliation/$GITHUB_RUN_ID"
+            IFS=',' read -ra SOURCES <<< "$SELECTED_SOURCES"
+          for source in "${SOURCES[@]}"; do
+              src="downloaded_fortnightly/$source/source_delta"
+              [ -d "$src" ] || continue
+              cp "$src/updated_native_ids.txt" "data/workflow00/source_id_registry/${source}_native_ids.txt"
+              cp "$src/reconciliation_manifest.json" \
+                "docs/search_record/fortnightly_update/reconciliation/$GITHUB_RUN_ID/${source}_reconciliation.json"
+            done
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/search_record
+          if [ '${{ inputs.run_type }}' = 'full' ] || [ '${{ inputs.run_type }}' = 'expansion' ] || [ '${{ inputs.run_type }}' = 'fortnightly' ] || [ '${{ inputs.run_type }}' = 'monthly' ]; then
+            git add data/workflow00/source_id_registry
+          fi
+          if [ '${{ inputs.run_type }}' = 'full' ]; then
+            git add data/workflow00/source_selection.json
+          fi
+
+          if git diff --cached --quiet; then
+            echo 'No new search records or source-ID registry changes to commit.'
+            exit 0
+          fi
+
+          git commit -m "Archive Workflow 00 search records for run ${GITHUB_RUN_ID}"
+          git push origin "HEAD:$WORKFLOW00_ORCHESTRATOR_BRANCH"
+
+      - name: Upload consolidated search archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow00-search-record-archive-${{ github.run_id }}
+          path: docs/search_record/
+          retention-days: 7
+          if-no-files-found: error
+
+  archive-search-to-zenodo:
+    needs: [validate-and-plan, archive-search-records]
+    if: ${{ always() && needs.validate-and-plan.result == 'success' && needs.archive-search-records.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      SELECTED_SOURCES: ${{ needs.validate-and-plan.outputs.selected_sources_csv }}
+    steps:
+      - name: Checkout Workflow 00 archive branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.WORKFLOW00_ORCHESTRATOR_BRANCH }}
+          fetch-depth: 0
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - name: Install Zenodo archive dependencies
+        shell: Rscript {0}
+        run: install.packages(c('httr2','jsonlite','digest','readr','googlesheets4'))
+
+      - name: Stage complete Workflow 00 search
+        id: stage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_TYPE: ${{ inputs.run_type }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p zenodo_staging/plan zenodo_staging/harvests zenodo_staging/search_records
+
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "workflow00-search-plan-$GITHUB_RUN_ID" \
+            --dir zenodo_staging/plan
+
+          sources=()
+          IFS=',' read -ra SOURCES <<< "$SELECTED_SOURCES"
+          for source in "${SOURCES[@]}"; do
+            case ",$SELECTED_SOURCES," in
+              *",$source,"*) ;;
+              *) continue ;;
+            esac
+            sources+=("$source")
+            mkdir -p "zenodo_staging/harvests/$source" "zenodo_staging/search_records/$source"
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "workflow00-${source}-harvest-$GITHUB_RUN_ID" \
+              --dir "zenodo_staging/harvests/$source"
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "workflow00-search-record-${source}-$GITHUB_RUN_ID" \
+              --dir "zenodo_staging/search_records/$source"
+          done
+
+          if [ "$RUN_TYPE" = "expansion" ]; then
+            mkdir -p zenodo_staging/expansion_reconciliation
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "workflow00-expansion-reconciliation-$GITHUB_RUN_ID" \
+              --dir zenodo_staging/expansion_reconciliation
+          fi
+
+          joined="$(IFS=,; echo "${sources[*]}")"
+          [ -n "$joined" ] || { echo "No selected sources staged" >&2; exit 2; }
+          echo "sources=$joined" >> "$GITHUB_OUTPUT"
+          echo "PASS: staged Workflow 00 run $GITHUB_RUN_ID for sources $joined"
+
+      - name: Validate and document both new manual RIS expansion archives
+        if: ${{ inputs.run_type == 'expansion' }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ZENODO_ACCESS_TOKEN"
+          for source in cab proquest; do
+            if [ "$source" = cab ]; then
+              registry="user_input/workflow00_ris_cab_mariculture_2026-10-18.json"
+              expected=41
+            else
+              registry="user_input/workflow00_ris_proquest_mariculture_2026-10-18.json"
+              expected=5
+            fi
+            mkdir -p "manual_expansion/$source"
+            Rscript scripts/updater/workflow_01_restore_manual_ris_from_zenodo.R \
+              --registry "$registry" --source "$source" \
+              --output "manual_expansion/$source/records.jsonl"
+            actual="$(wc -l < "manual_expansion/$source/records.jsonl")"
+            test "$actual" -eq "$expected"
+            cp "$registry" "zenodo_staging/plan/manual_expansion_${source}_registry.json"
+            echo "PASS: published $source expansion archive, $actual records"
+          done
+          Rscript -e 'library(jsonlite); x<-list(schema="w00-manual-expansion-inputs-v1",run_type="expansion",additional_search_term="maricultur*",sources=list(cab=list(doi="10.5281/zenodo.23453888",record_count=41L),proquest=list(doi="10.5281/zenodo.23453910",record_count=5L)));writeLines(toJSON(x,pretty=TRUE,auto_unbox=TRUE),"zenodo_staging/plan/manual_expansion_manifest.json")'
+
+      - name: Publish restricted Zenodo search archive
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_00_archive_to_zenodo.R \
+            --staging-root zenodo_staging \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-type '${{ inputs.run_type }}' \
+            --search-version '${{ needs.validate-and-plan.outputs.search_version }}' \
+            --sources '${{ steps.stage.outputs.sources }}' \
+            --repository "$GITHUB_REPOSITORY" \
+            --output-dir outputs/updater/workflow00_zenodo
+
+      - name: Update repository Zenodo search registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_00_update_zenodo_registry.R \
+            --receipt outputs/updater/workflow00_zenodo/zenodo_receipt.json \
+            --registry docs/search_record/zenodo_registry.csv \
+            --pointer-dir docs/search_record/zenodo
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/search_record/zenodo_registry.csv docs/search_record/zenodo/
+          if git diff --cached --quiet; then
+            echo 'Zenodo registry already contains this Workflow 00 run.'
+          else
+            git commit -m "Register Zenodo archive for Workflow 00 run $GITHUB_RUN_ID"
+            git push origin "HEAD:$WORKFLOW00_ORCHESTRATOR_BRANCH"
+          fi
+
+      - name: Upload Zenodo receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow00-zenodo-receipt-${{ github.run_id }}
+          path: outputs/updater/workflow00_zenodo/
+          retention-days: 7
+          if-no-files-found: warn
+
