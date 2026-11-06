@@ -57,8 +57,8 @@ if (length(climate) != 5L || length(agrifood) != 7L) {
 queries <- unlist(lapply(climate, function(c) vapply(agrifood, function(a)
   paste0("(",c,") AND (",review,") AND (",a,") AND PUBYEAR > 2014"),
   character(1))), use.names=FALSE)
-queries <- c("TITLE-ABS-KEY(\"climate change\") AND PUBYEAR > 2014", queries)
-limit <- suppressWarnings(as.integer(Sys.getenv("SCOPUS_PROBE_LIMIT", "2")))
+
+limit <- suppressWarnings(as.integer(Sys.getenv("SCOPUS_PROBE_LIMIT", "35")))
 if (is.na(limit) || limit < 1L || limit > length(queries)) stop("Invalid probe limit")
 key <- Sys.getenv("SCOPUS_API_TOKEN")
 if (!nzchar(key)) stop("SCOPUS_API_TOKEN missing")
@@ -87,6 +87,7 @@ for (i in seq_len(limit)) {
   cat(sprintf("Subquery %d/%d: %s; matches=%s\n", i, length(queries),
     if (is.null(results[[i]]$status)) "transport error" else paste0("HTTP ",results[[i]]$status),
     or_else(results[[i]]$total_results,"unavailable")))
+  Sys.sleep(0.2)
   if (is.null(results[[i]]$status) || results[[i]]$status >= 400 ||
       is.null(results[[i]]$total_results)) break
 }
