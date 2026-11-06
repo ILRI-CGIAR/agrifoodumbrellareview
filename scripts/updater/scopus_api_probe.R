@@ -59,13 +59,14 @@ queries <- unlist(lapply(climate, function(c) vapply(agrifood, function(a)
   character(1))), use.names=FALSE)
 
 limit <- suppressWarnings(as.integer(Sys.getenv("SCOPUS_PROBE_LIMIT", "35")))
-if (is.na(limit) || limit < 1L || limit > length(queries)) stop("Invalid probe limit")
+start <- suppressWarnings(as.integer(Sys.getenv("SCOPUS_PROBE_START", "7")))
+if (is.na(limit) || is.na(start) || start < 1L || limit < start || limit > length(queries)) stop("Invalid probe range")
 key <- Sys.getenv("SCOPUS_API_TOKEN")
 if (!nzchar(key)) stop("SCOPUS_API_TOKEN missing")
 inst <- Sys.getenv("SCOPUS_INSTTOKEN")
 dir.create("outputs/scopus", recursive=TRUE, showWarnings=FALSE)
 results <- list()
-for (i in seq_len(limit)) {
+for (i in seq.int(start,limit)) {
   query <- queries[[i]]
   req <- request("https://api.elsevier.com/content/search/scopus") |>
     req_headers(`X-ELS-APIKey`=key, Accept="application/json")
@@ -87,15 +88,16 @@ for (i in seq_len(limit)) {
   cat(sprintf("Subquery %d/%d: %s; matches=%s\n", i, length(queries),
     if (is.null(results[[i]]$status)) "transport error" else paste0("HTTP ",results[[i]]$status),
     or_else(results[[i]]$total_results,"unavailable")))
+  if (is.null(results[[i]]$status) || results[[i]]$status >= 400 || is.null(results[[i]]$total_results)) {
+    cat("API diagnostic: ", substr(or_else(results[[i]]$response_excerpt,or_else(results[[i]]$transport_error,"no details")),1,1000), "\n")
+  }
   Sys.sleep(0.2)
-  if (is.null(results[[i]]$status) || results[[i]]$status >= 400 ||
-      is.null(results[[i]]$total_results)) break
 }
-write_json(list(subqueries_total=length(queries), subqueries_attempted=length(results),
+write_json(list(subqueries_total=length(queries), subqueries_attempted=sum(!vapply(results,is.null,logical(1))),
                 year_min=2015, total_results_are_overlapping=TRUE,
                 result=results), "outputs/scopus/search_probe.json",
            pretty=TRUE,auto_unbox=TRUE,null="null")
-if (length(results)!=limit || any(vapply(results,function(z)
+if (any(vapply(results,function(z)
    is.null(z$status) || z$status >= 400 || is.null(z$total_results),logical(1)))) {
   stop("At least one Scopus subquery failed; see diagnostic artifact")
 }
