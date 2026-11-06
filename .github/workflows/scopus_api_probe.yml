@@ -9,6 +9,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 jobs:
   probe:
     runs-on: ubuntu-latest
@@ -22,6 +23,10 @@ jobs:
       - name: Install API dependencies
         shell: Rscript {0}
         run: install.packages(c("httr2","jsonlite","digest"))
+      - name: Restore previous completed Scopus partitions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download 42257419045 --repo "$GITHUB_REPOSITORY" --name scopus-2015-api-probe --dir outputs/scopus/previous
       - name: Run Scopus count-only probe
         env:
           SCOPUS_API_TOKEN: ${{ secrets.SCOPUS_API_TOKEN }}
