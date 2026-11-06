@@ -103,8 +103,8 @@ while(length(queue)>0L) {
       query_characters=nchar(query),total_results=as.integer(total))
   } else {
     details <- tryCatch(resp_body_string(resp),error=function(e)"")
-    if (status %in% c(400L,414L) &&
-        grepl("too large|URI Too Long|Request-URI Too Long",details,ignore.case=TRUE)) {
+    if (status %in% c(400L,413L,414L) &&
+        (status == 413L || grepl("too large|URI Too Long|Request-URI Too Long",details,ignore.case=TRUE))) {
       concepts <- list(task$climate,task$review,task$agrifood)
       leaves <- lapply(concepts,explode_or)
       eligible <- which(lengths(leaves)>1L)
