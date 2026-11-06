@@ -1,0 +1,39 @@
+name: Verify Scopus completed count checkpoint
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths: ['.github/workflows/verify_scopus_checkpoint.yml']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install dependencies
+        shell: Rscript {0}
+        run: install.packages(c("httr2","jsonlite","digest"))
+      - name: Restore completed count checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p outputs/scopus/previous
+          gh run download 42258635034 --repo "$GITHUB_REPOSITORY" --name scopus-2015-api-probe --dir outputs/scopus/previous
+      - name: Verify saved query partitions
+        env:
+          SCOPUS_API_TOKEN: ${{ secrets.SCOPUS_API_TOKEN }}
+          SCOPUS_INSTTOKEN: ${{ secrets.SCOPUS_INSTTOKEN }}
+        run: Rscript scripts/updater/scopus_api_probe.R
+      - name: Save diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-scopus-2015-checkpoint
+          path: outputs/scopus/search_probe.json
+          if-no-files-found: warn
+          retention-days: 3
