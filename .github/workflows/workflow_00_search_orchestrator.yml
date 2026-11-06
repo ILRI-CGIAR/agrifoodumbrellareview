@@ -814,33 +814,6 @@ jobs:
           echo "sources=$joined" >> "$GITHUB_OUTPUT"
           echo "PASS: staged Workflow 00 run $GITHUB_RUN_ID for sources $joined"
 
-      - name: Validate and document both new manual RIS expansion archives
-        if: ${{ inputs.run_type == 'expansion' }}
-        env:
-          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "$ZENODO_ACCESS_TOKEN"
-          for source in cab proquest; do
-            if [ "$source" = cab ]; then
-              registry="user_input/workflow00_ris_cab_mariculture_2026-10-18.json"
-              expected=41
-            else
-              registry="user_input/workflow00_ris_proquest_mariculture_2026-10-18.json"
-              expected=5
-            fi
-            mkdir -p "manual_expansion/$source"
-            Rscript scripts/updater/workflow_01_restore_manual_ris_from_zenodo.R \
-              --registry "$registry" --source "$source" \
-              --output "manual_expansion/$source/records.jsonl"
-            actual="$(wc -l < "manual_expansion/$source/records.jsonl")"
-            test "$actual" -eq "$expected"
-            cp "$registry" "zenodo_staging/plan/manual_expansion_${source}_registry.json"
-            echo "PASS: published $source expansion archive, $actual records"
-          done
-          Rscript -e 'library(jsonlite); x<-list(schema="w00-manual-expansion-inputs-v1",run_type="expansion",additional_search_term="maricultur*",sources=list(cab=list(doi="10.5281/zenodo.23453888",record_count=41L),proquest=list(doi="10.5281/zenodo.23453910",record_count=5L)));writeLines(toJSON(x,pretty=TRUE,auto_unbox=TRUE),"zenodo_staging/plan/manual_expansion_manifest.json")'
-
       - name: Publish restricted Zenodo search archive
         env:
           ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
