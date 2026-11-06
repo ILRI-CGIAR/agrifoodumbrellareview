@@ -1,0 +1,22 @@
+{
+  "source": "lens",
+  "search_source": "user_input/scopus_search_2015_onwards.txt",
+  "publication_years": "2015-2026",
+  "excluded_publication_type": "dataset",
+  "exclusion_applied": "Lens publication_type=dataset must_not; OpenAlex type:!dataset",
+  "search_fields": "title and abstract",
+  "search_components": 35,
+  "raw_component_hits": 27773,
+  "unique_source_ids": 11241,
+  "duplicate_component_occurrences": 16532,
+  "limitations": [
+    "Four Scopus W/n clauses translated to AND rather than equivalent ordered proximity",
+    "OpenAlex truncation stars removed; search engine uses stemming",
+    "Individual search components overlap; deduplicated internally by source ID; no cross-database deduplication"
+  ],
+  "restricted_zenodo_record_id": "24023958",
+  "restricted_zenodo_url": "https://zenodo.org/records/24023958",
+  "api_counts_run": "https://github.com/ILRI-CGIAR/agrifoodumbrellareview/actions/runs/42308597779",
+  "archive_run": "https://github.com/ILRI-CGIAR/agrifoodumbrellareview/actions/runs/42309020483",
+  "status": "verified"
+}
