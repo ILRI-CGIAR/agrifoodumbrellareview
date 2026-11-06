@@ -73,6 +73,36 @@ if(!nzchar(key)) stop("SCOPUS_API_TOKEN missing")
 inst <- Sys.getenv("SCOPUS_INSTTOKEN")
 outdir <- "outputs/scopus";dir.create(outdir,recursive=TRUE,showWarnings=FALSE)
 done <- list(); errors <- list(); splits <- list(); attempts <- 0L
+previous_file <- "outputs/scopus/previous/search_probe.json"
+if (file.exists(previous_file)) {
+  previous <- fromJSON(previous_file,simplifyVector=FALSE)
+  done <- or_else(previous$summaries,list())
+  splits <- or_else(previous$splits,list())
+  for (event in splits) {
+    match <- which(vapply(queue,function(t) identical(t$origin,event$parent),logical(1)))
+    if (length(match)!=1L) stop("Failed to reconstruct split lineage")
+    task <- queue[[match]]
+    k <- as.integer(event$concept)
+    leaves <- explode_or(task[[k]])
+    half <- floor(length(leaves)/2L)
+    stopifnot(half>=1L,length(leaves)>1L)
+    children <- lapply(1:2,function(j) {
+      terms <- if(j==1L) leaves[seq_len(half)] else leaves[(half+1L):length(leaves)]
+      z <- task;z[[k]] <- join_or(terms)
+      z$origin <- paste0(task$origin,".",j)
+      z$split_depth <- task$split_depth+1L
+      z
+    })
+    queue <- c(queue[-match],children)
+  }
+  ids <- vapply(done,function(x)x$origin,character(1))
+  queue <- Filter(function(t) !(t$origin %in% ids),queue)
+  if (length(queue)!=as.integer(previous$pending))
+    stop(sprintf("Resume audit failed: reconstructed %d pending vs expected %s",
+         length(queue),as.character(previous$pending)))
+  cat(sprintf("Restored %d completed partitions and %d pending from prior run\n",
+      length(done),length(queue)))
+}
 save_state <- function() write_json(list(
   starting_subqueries=35L,successful_count_queries=length(done),
   pending=length(queue),partition_events=length(splits),
