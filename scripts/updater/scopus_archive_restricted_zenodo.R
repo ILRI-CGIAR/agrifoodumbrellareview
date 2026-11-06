@@ -14,7 +14,7 @@ manifest<-list(schema="agrifood-scopus-internal-dedup-v1",date_utc=format(Sys.ti
   files=lapply(files,function(f)list(filename=f,size=unname(file.info(file.path(root,f))$size),
     sha256=digest(file=file.path(root,f),algo="sha256",serialize=FALSE))))
 write_json(manifest,file.path(archive_dir,"manifest.json"),pretty=TRUE,auto_unbox=TRUE,null="null")
-tar_path<-file.path(archive_dir,"scopus_2015_internal_dedup.tar.gz")
+tar_path<-file.path(normalizePath(archive_dir,mustWork=TRUE),"scopus_2015_internal_dedup.tar.gz")
 wd<-getwd();setwd(root)
 utils::tar(normalizePath(tar_path,mustWork=FALSE),files=files,compression="gzip",tar="internal")
 setwd(wd)
@@ -28,7 +28,7 @@ perform<-function(r,accepted,label){
     substr(tryCatch(resp_body_string(resp),error=function(e)""),1,700)))
   resp_body_json(resp,simplifyVector=FALSE)
 }
-created<-perform(auth(request(api) |> req_method("POST") |> req_body_json(list())) ,201L,"draft creation")
+created<-perform(auth(request(api) |> req_method("POST") |> req_body_raw(charToRaw("{}"),type="application/json")) ,201L,"draft creation")
 id<-as.character(created$id);bucket<-as.character(created$links$bucket)
 metadata<-list(metadata=list(
   title=sprintf("Agri-food umbrella review: Scopus 2015+ internal deduplication | GitHub run %s",Sys.getenv("GITHUB_RUN_ID")),
