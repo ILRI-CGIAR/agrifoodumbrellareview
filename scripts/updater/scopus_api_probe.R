@@ -43,6 +43,7 @@ unwrap <- function(s) {
 }
 query_text <- paste(readLines("user_input/scopus_search_2015_onwards.txt", warn=FALSE, encoding="UTF-8"), collapse=" ")
 query_text <- trimws(gsub("[[:space:]]+", " ", query_text))
+query_text <- gsub("\\\\[*]", "*", query_text) # Markdown-escaped wildcard -> Scopus wildcard
 query_text <- sub(" AND PUBYEAR > 2014$", "", query_text, fixed=FALSE)
 base <- unwrap(query_text)
 main <- split_top(base, "AND")
@@ -56,7 +57,8 @@ if (length(climate) != 5L || length(agrifood) != 7L) {
 queries <- unlist(lapply(climate, function(c) vapply(agrifood, function(a)
   paste0("(",c,") AND (",review,") AND (",a,") AND PUBYEAR > 2014"),
   character(1))), use.names=FALSE)
-limit <- suppressWarnings(as.integer(Sys.getenv("SCOPUS_PROBE_LIMIT", "1")))
+queries <- c("TITLE-ABS-KEY(\"climate change\") AND PUBYEAR > 2014", queries)
+limit <- suppressWarnings(as.integer(Sys.getenv("SCOPUS_PROBE_LIMIT", "2")))
 if (is.na(limit) || limit < 1L || limit > length(queries)) stop("Invalid probe limit")
 key <- Sys.getenv("SCOPUS_API_TOKEN")
 if (!nzchar(key)) stop("SCOPUS_API_TOKEN missing")
@@ -79,7 +81,8 @@ for (i in seq_len(limit)) {
     total <- body[["search-results"]][["opensearch:totalResults"]]
     results[[i]] <- list(index=i, length=nchar(query), status=status,
                          total_results=total,
-                         error=or_else(body[["service-error"]],or_else(body[["error-response"]],body[["error"]])))
+                         error=or_else(body[["service-error"]],or_else(body[["error-response"]],body[["error"]])),
+                         response_excerpt=if(status>=400) substr(resp_body_string(resp),1,1500) else NULL)
   }
   cat(sprintf("Subquery %d/%d: %s; matches=%s\n", i, length(queries),
     if (is.null(results[[i]]$status)) "transport error" else paste0("HTTP ",results[[i]]$status),
