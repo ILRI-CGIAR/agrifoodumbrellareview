@@ -1,0 +1,52 @@
+name: AGRICOLA Europe PMC 2015+ retrieval dedup and archive
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths: ['.github/workflows/agricola_retrieve.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install dependencies
+        shell: Rscript {0}
+        run: install.packages(c("httr2","jsonlite","digest"))
+      - name: Check source code syntax
+        shell: Rscript {0}
+        run: |
+          invisible(parse(file="scripts/updater/agricola_europepmc_retrieve.R"))
+          invisible(parse(file="scripts/updater/agricola_europepmc_archive_zenodo.R"))
+      - name: Restore all 35 validated AGR source search expressions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for shard in 1 2 3 4 5; do
+            mkdir -p "outputs/agricola/count/shard_$shard"
+            gh run download 42307385452 --repo "$GITHUB_REPOSITORY" --name "agricola-count-shard-$shard" --dir "outputs/agricola/count/shard_$shard"
+          done
+      - name: Retrieve and validate AGRICOLA source records
+        run: Rscript scripts/updater/agricola_europepmc_retrieve.R
+      - name: Publish restricted Zenodo archive
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        run: Rscript scripts/updater/agricola_europepmc_archive_zenodo.R
+      - name: Save safe summary and archive receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agricola-2015-dedup-summary
+          path: |
+            outputs/agricola/dedup_summary.json
+            outputs/agricola/zenodo_receipt.json
+            outputs/agricola/component_audit.json
+          retention-days: 30
+          if-no-files-found: warn
