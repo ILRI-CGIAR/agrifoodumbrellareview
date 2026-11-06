@@ -1,0 +1,33 @@
+name: AGRICOLA EBSCOhost API entitlement probe
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths: ['.github/workflows/agricola_entitlement_probe.yml']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install dependencies
+        shell: Rscript {0}
+        run: install.packages(c("httr2","xml2","jsonlite"))
+      - name: Check AGRICOLA API entitlement and count-only smoke test
+        env:
+          EBSCO_EHOST_UID: ${{ secrets.EBSCO_EHOST_UID }}
+          EBSCO_EHOST_PWD: ${{ secrets.EBSCO_EHOST_PWD }}
+        run: Rscript scripts/updater/agricola_eit_probe.R
+      - name: Archive status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agricola-api-entitlement-probe
+          path: outputs/agricola/api_entitlement_probe.json
+          retention-days: 7
+          if-no-files-found: warn
