@@ -36,9 +36,9 @@ perform<-function(r,accepted,label){
 created<-perform(auth(request(api) |> req_method("POST") |> req_body_raw(charToRaw("{}"),type="application/json")) ,201L,"draft creation")
 id<-as.character(created$id);bucket<-as.character(created$links$bucket)
 metadata<-list(metadata=list(
-  title=sprintf("Agri-food umbrella review: 2015+ scholarly bibliographic search excluding datasets internal deduplication | GitHub run %s",Sys.getenv("GITHUB_RUN_ID")),
+  title=sprintf("Agri-food umbrella review: %s 2015+ scholarly records excluding datasets | GitHub run %s",provider,Sys.getenv("GITHUB_RUN_ID")),
   upload_type="dataset",publication_date=format(Sys.Date(),"%Y-%m-%d"),
-  description="<p>Restricted bibliographic metadata from Europe PMC AGR source (2015 onwards). Includes internal source record ID deduplication, partition provenance and checksums. Database licence restrictions apply; no public redistribution of bulk bibliographic metadata is authorised.</p>",
+  description=sprintf("<p>Restricted scholarly bibliographic metadata from %s (2015 onwards, with dataset-type works excluded at the API level). Includes internal source-ID deduplication, partition provenance and checksums. Query translation limitations are recorded in the manifest. No public redistribution of bulk source metadata is authorised.</p>",provider),
   creators=list(list(name="Haddaway, Neal")),
   access_right="restricted",
   access_conditions="Bibliographic metadata are subject to bibliographic source licensing restrictions and are retained for authorised research purposes only.",
