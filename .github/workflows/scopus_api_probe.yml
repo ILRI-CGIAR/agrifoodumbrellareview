@@ -1,0 +1,37 @@
+name: Scopus 2015+ API query probe
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths:
+      - 'user_input/scopus_search_2015_onwards.txt'
+      - 'scripts/updater/scopus_api_probe.R'
+      - '.github/workflows/scopus_api_probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install API dependencies
+        shell: Rscript {0}
+        run: install.packages(c("httr2","jsonlite"))
+      - name: Run Scopus count-only probe
+        env:
+          SCOPUS_API_TOKEN: ${{ secrets.SCOPUS_API_TOKEN }}
+          SCOPUS_INSTTOKEN: ${{ secrets.SCOPUS_INSTTOKEN }}
+        run: Rscript scripts/updater/scopus_api_probe.R
+      - name: Upload response diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scopus-2015-api-probe
+          path: outputs/scopus/search_probe.json
+          if-no-files-found: ignore
+          retention-days: 3
