@@ -114,7 +114,7 @@ while(length(queue)>0L) {
         save_state();break
       }
       k <- eligible[[which.max(vapply(leaves[eligible],
-          function(x)sum(nchar(x)),numeric(1))]]
+          function(x)sum(nchar(x)),numeric(1)))]]
       half <- floor(length(leaves[[k]])/2L)
       splitparts <- list(leaves[[k]][seq_len(half)],leaves[[k]][(half+1L):length(leaves[[k]])])
       newtasks <- lapply(seq_along(splitparts), function(j) {
