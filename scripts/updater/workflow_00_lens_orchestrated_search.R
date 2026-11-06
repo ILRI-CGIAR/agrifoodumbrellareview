@@ -20,8 +20,8 @@ audit_dir <- arg('--audit-dir', 'fresh_rebuild')
 api <- 'https://api.lens.org/scholarly/search'
 page_size <- 500L
 scroll_ttl <- '1m'
-sentinel_lens_id <- '033-262-857-738-715'
-require_sentinel <- tolower(arg('--require-sentinel', 'true')) %in% c('true','1','yes')
+sentinel_lens_id <- trimws(arg('--sentinel-lens-id', ''))
+require_sentinel <- tolower(arg('--require-sentinel', 'false')) %in% c('true','1','yes')
 token <- Sys.getenv('LENS_API_TOKEN', unset = '')
 if (!nzchar(token)) stop('LENS_API_TOKEN is required')
 
@@ -52,8 +52,8 @@ doi_from <- function(raw) {
 
 cfg <- fromJSON(config_path, simplifyVector = FALSE)
 query_string <- cfg$api_query$query$bool$must[[1]]$query_string$query
-if (!grepl('salmonid* OR Salmo OR Oncorhynchus OR "rainbow trout"', query_string, fixed = TRUE)) {
-  stop('Refusing Workflow 00: species clause must contain salmonid*, Salmo, Oncorhynchus and "rainbow trout"')
+if (!is.character(query_string) || length(query_string) != 1L || !nzchar(trimws(query_string))) {
+  stop('Refusing Workflow 00: a project-specific Lens API query is required')
 }
 base_query <- cfg$api_query$query
 query_sha <- digest(query_string, algo = 'sha256', serialize = FALSE)
@@ -165,6 +165,7 @@ if (!is.null(reported_total) && raw_count < reported_total) {
 lens_ids <- vapply(rows, function(r) r$identity$lens_id, character(1))
 if (anyDuplicated(lens_ids)) stop('Internal Lens-ID uniqueness failure')
 sentinel_present <- sentinel_lens_id %in% lens_ids
+if (require_sentinel && !nzchar(sentinel_lens_id)) stop('--sentinel-lens-id required when sentinel checking is enabled')
 if (require_sentinel && !sentinel_present) {
   stop(sprintf('Regression guard failed: known eligible Lens record %s was not returned by the corrected search', sentinel_lens_id))
 }
@@ -182,7 +183,7 @@ manifest <- list(
   query_config = config_path,
   query_string = query_string,
   query_sha256 = query_sha,
-  rainbow_trout_present_in_query = TRUE,
+  query_configured = TRUE,
   regression_sentinel_lens_id = sentinel_lens_id,
   regression_sentinel_required = require_sentinel,
   regression_sentinel_present = sentinel_present,
