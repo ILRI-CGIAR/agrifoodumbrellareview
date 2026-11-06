@@ -1,0 +1,17 @@
+{
+  "schema": "agrifoodumbrellareview-scopus-count-validation-v1",
+  "search_scope": "User-supplied climate change x evidence synthesis x agri-food Boolean search",
+  "publication_year_min": 2015,
+  "year_filter": "PUBYEAR > 2014",
+  "source_file": "user_input/scopus_search_2015_onwards.txt",
+  "api": "Scopus Search API GET",
+  "initial_logical_partitions": 35,
+  "successful_final_partitions": 200,
+  "adaptive_split_events": 165,
+  "sum_of_partition_match_counts_nonunique": 33681,
+  "note": "Counts overlap across Boolean partitions; not a unique record count. No bibliographic harvest performed.",
+  "validation_run_id": 42258635034,
+  "validation_run_url": "https://github.com/ILRI-CGIAR/agrifoodumbrellareview/actions/runs/42258635034",
+  "status": "API count search completed successfully",
+  "restricted_zenodo_archive_created": false
+}
