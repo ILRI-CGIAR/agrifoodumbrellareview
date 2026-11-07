@@ -1,0 +1,63 @@
+name: ILRI W01 exhaustive duplicate-pair scoring
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths:
+      - .github/workflows/ilri_w01_exhaustive_score.yml
+      - scripts/updater/ilri_w01_exhaustive_score.R
+  workflow_dispatch:
+jobs:
+  score:
+    name: "W01 score shard ${{ matrix.shard }}/24"
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::jsonlite
+            any::data.table
+            any::stringdist
+            any::digest
+      - uses: actions/download-artifact@v4
+        with:
+          name: ilri-w01-initial-deduplication-42387334138
+          run-id: 42387334138
+          path: downloaded
+          github-token: ${{ github.token }}
+      - name: Locate verified candidate and normalised metadata files
+        run: |
+          find downloaded -maxdepth 4 -type f -printf '%p\n'
+          mkdir -p inputs/w01
+          a=$(find downloaded -type f -name all_candidate_pairs.csv)
+          b=$(find downloaded -type f -name normalised_metadata.csv)
+          test $(printf '%s\n' "$a" | grep -c .) -eq 1
+          test $(printf '%s\n' "$b" | grep -c .) -eq 1
+          cp "$a" inputs/w01/all_candidate_pairs.csv
+          cp "$b" inputs/w01/normalised_metadata.csv
+      - name: Score every candidate pair assigned to this shard
+        run: |
+          Rscript scripts/updater/ilri_w01_exhaustive_score.R \
+            --input-dir inputs/w01 \
+            --output-dir outputs/w01_exhaustive \
+            --shard ${{ matrix.shard }} \
+            --shards 24
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: w01-scored-shard-${{ matrix.shard }}
+          path: outputs/w01_exhaustive/
+          if-no-files-found: warn
+          retention-days: 30
