@@ -178,7 +178,14 @@ count_forestry_exact <- function(i) {
     hit_nodes <- xml_find_all(d,"//*[local-name()='Hits']")
     hits <- suppressWarnings(as.integer(trimws(xml_text(hit_nodes))))
     hits <- hits[!is.na(hits)]
-    if(length(hits)!=1L) stop("Chunk returned an ambiguous hit count")
+    if(length(hits)!=1L) {
+      root_node <- xml_root(d)
+      tags <- head(unique(xml_name(xml_find_all(d,"//*"))),15L)
+      message(sprintf("EconLit chunk %d:7/%d invalid hit count: root=%s, tags=%s, query_length=%d, values=%s",
+        i,chunk_index,xml_name(root_node),paste(tags,collapse=","),nchar(q),
+        paste(hits,collapse=",")))
+      stop("Chunk returned an ambiguous hit count")
+    }
     count <- hits[[1L]]
     if(count>4880L) stop("A forestry chunk exceeds EIT safe pagination limit")
     got <- extract_ids(d)
