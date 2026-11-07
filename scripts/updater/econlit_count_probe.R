@@ -99,6 +99,21 @@ fetch <- function(endpoint, params) {
             x <- read_xml(sprintf("<CountResponse><Hits>%s</Hits></CountResponse>",count))
           }
         }
+        if(inherits(x,"error") && n_declarations==2L) {
+          starts <- as.integer(declarations)
+          pieces <- c(substr(body,starts[[1L]],starts[[2L]]-1L),substr(body,starts[[2L]],nchar(body)))
+          for(pi in seq_along(pieces)) {
+            parsed_piece <- tryCatch(read_xml(pieces[[pi]]),error=identity)
+            if(inherits(parsed_piece,"error")) {
+              message(sprintf("EBSCO response segment %d: invalid XML (%s)",pi,conditionMessage(parsed_piece)))
+            } else {
+              root_name <- xml_name(xml_root(parsed_piece))
+              err_nodes <- xml_find_all(parsed_piece,"//*[local-name()='Error' or local-name()='error' or local-name()='Fault']")
+              err_text <- if(length(err_nodes)) substr(gsub("[[:space:]]+"," ",xml_text(err_nodes[[1L]])),1L,400L) else "none"
+              message(sprintf("EBSCO response segment %d: root=%s, api_error=%s",pi,root_name,err_text))
+            }
+          }
+        }
         if(inherits(x,"error")) stop("EBSCO returned invalid XML without a safely recoverable count; see structural diagnostics")
       }
       err <- xml_find_first(x,"//*[local-name()='Error' or local-name()='error']")
