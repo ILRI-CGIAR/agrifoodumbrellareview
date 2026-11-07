@@ -82,11 +82,24 @@ fetch <- function(endpoint, params) {
         body <- rawToChar(response_bytes)
         declarations <- gregexpr("<?xml",body,fixed=TRUE)[[1L]]
         hits <- regmatches(body,gregexpr("<Hits>[[:space:]]*[0-9]+[[:space:]]*</Hits>",body,perl=TRUE))[[1L]]
+        n_declarations <- if(declarations[[1L]] == -1L) 0L else length(declarations)
         message(sprintf("EBSCO malformed-XML diagnostics: bytes=%d, xml_declarations=%d, hit_elements=%d, begins_with_xml=%s, xml_error=%s",
-          length(response_bytes),if(declarations[[1L]]==-1L)0L else length(declarations),
-          if(length(hits)==1L&&identical(hits,""))0L else length(hits),
+          length(response_bytes),n_declarations,length(hits),
           grepl("^[[:space:]]*<\\?xml",body),conditionMessage(x)))
-        stop("EBSCO returned invalid XML; see structural diagnostics")
+        # EIT sometimes returns two XML documents in one HTTP 200 response.
+        # For count-only calls, accept a unique numeric Hits element only,
+        # with an XML prefix, no explicit API error and no ambiguous count.
+        if(endpoint == "Search" && n_declarations == 2L &&
+           grepl("^[[:space:]]*<\\?xml",body) &&
+           length(hits) == 1L &&
+           !grepl("<(?:[[:alnum:]_]+:)?(?:Error|Fault)(?:[[:space:]>])",body,perl=TRUE)) {
+          count <- sub(".*<Hits>[[:space:]]*([0-9]+)[[:space:]]*</Hits>.*","\\1",hits,perl=TRUE)
+          if(grepl("^[0-9]+$",count)) {
+            message("EBSCO count-only: recovered a single unambiguous Hits value from a malformed multi-declaration XML response")
+            x <- read_xml(sprintf("<CountResponse><Hits>%s</Hits></CountResponse>",count))
+          }
+        }
+        if(inherits(x,"error")) stop("EBSCO returned invalid XML without a safely recoverable count; see structural diagnostics")
       }
       err <- xml_find_first(x,"//*[local-name()='Error' or local-name()='error']")
       if(!inherits(err,"xml_missing")) stop(sprintf("API error: %s",xml_text(err)))
