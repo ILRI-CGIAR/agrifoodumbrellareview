@@ -3,7 +3,7 @@
   "branch": "migration/w00-w03",
   "run_type": "initial",
   "workflow00_pointer_path": "docs/workflow00/ilri_validated_artifacts_2026-11-07.json",
-  "status": "w00_validated_for_w01_preflight",
+  "status": "w03_published",
   "search": {
     "sources": {
       "scopus": {
@@ -37,5 +37,6 @@
     "manual_w00_validation_run_id": 42385413283,
     "manual_handoff_run_id": 42385813489
   },
-  "notes": "First-run provenance for ILRI W00 verified inputs; status does not assert completed W01 or a published W00 state"
+  "notes": "First-run provenance for ILRI W00 verified inputs; status does not assert completed W01 or a published W00 state",
+  "workflow03_pointer_path": "docs/publication_status/zenodo/run-42418518879.json"
 }
