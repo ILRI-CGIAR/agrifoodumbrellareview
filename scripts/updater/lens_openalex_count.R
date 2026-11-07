@@ -92,7 +92,7 @@ fetch_count<-function(t){
  q<-build_text(t)
  if(provider=="lens"){
   payload<-list(query=list(bool=list(
-     must=list(list(query_string=list(query=q,fields=c("title","abstract"),default_operator="AND"))),
+     must=list(list(query_string=list(query=q,fields=c("title","abstract","keyword"),default_operator="AND"))),
      filter=list(list(range=list(year_published=list(gte=2015,lte=2026)))),
      must_not=list(list(term=list(publication_type="dataset")))
   )),size=0L)
@@ -102,7 +102,7 @@ fetch_count<-function(t){
  }else{
   request_obj<-request("https://api.openalex.org/works") |>
     req_url_query("api_key"=secret,
-      "search.title_and_abstract"=q,
+      "search.title_abstract_keywords"=q,
       filter="from_publication_date:2015-01-01,to_publication_date:2026-12-31,type:!dataset",
       per_page=1)
  }
@@ -124,7 +124,7 @@ fetch_count<-function(t){
  list(http="transport_error",error=msg,query=q)
 }
 result<-list(provider=provider,shard=shard,status="incomplete",dataset_exclusion=if(provider=="lens")"must_not term publication_type=dataset" else "type:!dataset",
- year_filter="2015-2026",field_scope="title and abstract",
+ year_filter="2015-2026",field_scope="title, abstract and keywords",
  proximity_translation="four Scopus W/n clauses replaced by AND",
  wildcard_translation=if(provider=="openalex")"asterisk truncation stripped; OpenAlex stemming" else "asterisk truncation retained",
  components=list(),errors=list())
