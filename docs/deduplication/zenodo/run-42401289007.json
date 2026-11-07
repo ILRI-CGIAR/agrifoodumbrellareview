@@ -1,0 +1,41 @@
+{
+  "status": "published",
+  "workflow": "01",
+  "state": "final",
+  "github_run_id": "42401289007",
+  "github_run_url": "https://github.com/ILRI-CGIAR/agrifoodumbrellareview/actions/runs/42401289007",
+  "review_id": null,
+  "google_sheet_id": null,
+  "source_manifestations": 46361,
+  "preserved_pair_decisions": 0,
+  "incremental_candidate_rows": 107836,
+  "incremental_pair_decisions": 107836,
+  "exact_duplicate_candidate_rows_removed": 0,
+  "manual_review_pairs": 925,
+  "canonical_records": 21054,
+  "canonical_jsonl_sha256": "d6419e72b8e9cf11453c2fa5c9d4d840986c29db4783f399f48a34e5390c2420",
+  "canonical_jsonl_bytes": 256830824,
+  "zenodo_record_id": "24042387",
+  "zenodo_deposition_id": "24042387",
+  "doi": "10.5281/zenodo.24042387",
+  "record_url": "https://zenodo.org/records/24042387",
+  "title": "Living Evidence Map deduplication state | Workflow 01 run 42401289007 | final",
+  "visibility": "restricted",
+  "total_bytes": 155789454,
+  "archive_files": [
+    {
+      "filename": "LivingEvidenceMap_workflow01_run-42401289007_final-state.tar.gz",
+      "bytes": 155788409,
+      "sha256": "de68509fa99ab9135ae9adf1c7a1bf7f5381804fe0b8c8e8c9639a61369c162b",
+      "zenodo_checksum": "md5:718275b0d4312810c3338fbd85d498d0"
+    },
+    {
+      "filename": "LivingEvidenceMap_workflow01_run-42401289007_manifest.json",
+      "bytes": 1045,
+      "sha256": "a2cfdfb2d7a47fac1c76cc738c2c758dedf9a88fa2d6aa8afc9fce45f8954a52",
+      "zenodo_checksum": "md5:74ea614e342f7c8e39e2994ccfb3a020"
+    }
+  ],
+  "manifest_sha256": "a2cfdfb2d7a47fac1c76cc738c2c758dedf9a88fa2d6aa8afc9fce45f8954a52",
+  "published_at_utc": "2026-11-07T18:47:56Z"
+}
