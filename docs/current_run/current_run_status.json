@@ -1,0 +1,41 @@
+{
+  "first_run": true,
+  "branch": "migration/w00-w03",
+  "run_type": "initial",
+  "workflow00_pointer_path": "docs/workflow00/ilri_validated_artifacts_2026-11-07.json",
+  "status": "w00_validated_for_w01_preflight",
+  "search": {
+    "sources": {
+      "scopus": {
+        "successfully_downloaded_results": 10919
+      },
+      "lens": {
+        "successfully_downloaded_results": 11241
+      },
+      "openalex": {
+        "successfully_downloaded_results": 9105
+      },
+      "agricola": {
+        "successfully_downloaded_results": 192
+      },
+      "wos": {
+        "successfully_downloaded_results": 9338
+      },
+      "cab": {
+        "successfully_downloaded_results": 4951
+      },
+      "proquest": {
+        "successfully_downloaded_results": 528
+      },
+      "lilacs": {
+        "successfully_downloaded_results": 87
+      }
+    }
+  },
+  "source_runs": {
+    "api_restoration_run_id": 42386416321,
+    "manual_w00_validation_run_id": 42385413283,
+    "manual_handoff_run_id": 42385813489
+  },
+  "notes": "First-run provenance for ILRI W00 verified inputs; status does not assert completed W01 or a published W00 state"
+}
