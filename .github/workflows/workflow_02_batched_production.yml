@@ -69,7 +69,8 @@ jobs:
             POINTER="$(python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["first_run"] is True and x.get("previous_workflow02_pointer_path","")==""; print(x["workflow01_pointer_path"])' "$REQUEST")"
             FIRST_RUN=true
             PREVIOUS=""
-            RESUME=""
+            RESUME="$(python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); print(x.get("resume_run_id",""))' "$REQUEST")"
+            if [ -n "$RESUME" ]; then [[ "$RESUME" =~ ^[0-9]+$ ]]; fi
           fi
           test -s "$POINTER"
           echo "first_run=$FIRST_RUN" >> "$GITHUB_OUTPUT"
