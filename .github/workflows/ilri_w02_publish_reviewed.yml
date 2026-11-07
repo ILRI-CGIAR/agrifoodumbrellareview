@@ -40,6 +40,8 @@ jobs:
           mkdir -p saved/verified saved/final saved/batches outputs/workflow02_state outputs/workflow02
           gh run download 42417536880 --repo "$GITHUB_REPOSITORY" --name w02-reviewed-verified-42417536880 --dir saved/verified
           gh run download "$W02_SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --name "workflow02-finalize-input-$W02_SOURCE_RUN" --dir saved/final
+          mkdir -p saved/original
+          gh run download "$W02_SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --name "workflow02-batched-final-$W02_SOURCE_RUN" --dir saved/original
           gh run download "$W02_SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --pattern "workflow02-batch-*-$W02_SOURCE_RUN" --dir saved/batches
           test -s saved/verified/workflow02/enriched.jsonl
           test -s saved/verified/workflow02/current_patch.jsonl
@@ -84,7 +86,8 @@ jobs:
           cp saved/final/outputs/workflow02_plan/{plan.json,resume_report.json} outputs/workflow02_state/
           mv outputs/workflow02_state/plan.json outputs/workflow02_state/batch_plan.json
           cp saved/verified/reviewed/{review_decisions.jsonl,reconciliation_report.json} outputs/workflow02_state/
-          : > outputs/workflow02_state/retry_queue.jsonl
+          cp saved/original/workflow02/retry_queue.jsonl outputs/workflow02_state/retry_queue.jsonl
+          test "$(wc -l < outputs/workflow02_state/retry_queue.jsonl)" -eq 1
           Rscript - <<'RS'
           library(jsonlite);library(digest)
           p<-fromJSON('docs/deduplication/zenodo/run-42401289007.json')
@@ -107,7 +110,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p outputs/workflow02_zenodo
-          W01_SHA="$(Rscript -e "x<-jsonlite::fromJSON('docs/deduplication/zenodo/run-42401289007.json');cat(x$canonical_jsonl_sha256)")"
+          W01_SHA="$(cat saved/final/workflow01_sha.txt)"
           Rscript scripts/updater/workflow_02_archive_state_to_zenodo.R \
             --state-dir outputs/workflow02_state \
             --run-id "$GITHUB_RUN_ID" --repository "$GITHUB_REPOSITORY" \
