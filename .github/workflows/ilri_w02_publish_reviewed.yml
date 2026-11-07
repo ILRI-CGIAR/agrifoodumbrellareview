@@ -109,6 +109,7 @@ jobs:
           ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
         run: |
           set -euo pipefail
+          test -s user_input/zenodo_config.json
           mkdir -p outputs/workflow02_zenodo
           W01_SHA="$(cat saved/final/workflow01_sha.txt)"
           Rscript scripts/updater/workflow_02_archive_state_to_zenodo.R \
