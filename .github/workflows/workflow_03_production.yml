@@ -80,6 +80,10 @@ permissions:
   contents: write
   actions: write
 
+env:
+  WORKFLOW01_BRANCH: migration/w00-w03
+  WORKFLOW02_BRANCH: migration/w00-w03
+
 jobs:
   publication-status:
     runs-on: ubuntu-latest
@@ -90,7 +94,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: migration/w00-w03
           fetch-depth: 0
 
       - name: Set up R
@@ -240,7 +244,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin main
+          git pull --rebase origin migration/w00-w03
           Rscript scripts/updater/workflow_03_update_zenodo_registry.R \
             --receipt outputs/workflow03_zenodo/zenodo_receipt.json \
             --registry docs/publication_status/zenodo_registry.csv \
@@ -249,38 +253,33 @@ jobs:
           git add docs/publication_status/zenodo_registry.csv "$POINTER"
           if ! git diff --cached --quiet; then
             git commit -m "Register Workflow 03 publication-status state $GITHUB_RUN_ID"
-            git push origin HEAD:main
+            git push origin HEAD:migration/w00-w03
           fi
           echo "pointer_path=$POINTER" >> "$GITHUB_OUTPUT"
 
-      - name: Update live Shiny progress after published W03
+      - name: Record published W03 status in ILRI GitHub-only run
         if: ${{ (github.event_name == 'push' || inputs.publish == true) && (github.event_name == 'push' || inputs.limit == '0') }}
-        env:
-          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
-          LEM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
-          LEM_GOOGLE_SHEET_ID: ${{ secrets.LEM_TEST_GOOGLE_SHEET_ID }}
         shell: bash
         run: |
           set -euo pipefail
-          # Registry commits made with GITHUB_TOKEN do not trigger a second
-          # workflow automatically, so update the current-run status here.
-          git pull --rebase origin main
-          Rscript scripts/updater/workflow_current_run_status_observer.R \
-            --force-stage W03 \
-            --pointer "docs/publication_status/zenodo/run-$GITHUB_RUN_ID.json"
-          printf '%s' "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/lem-google-service-account.json"
-          chmod 600 "$RUNNER_TEMP/lem-google-service-account.json"
-          Rscript scripts/updater/workflow_current_run_status_to_shiny.R \
-            --status docs/current_run/current_run_status.json \
-            --sheet-id "$LEM_GOOGLE_SHEET_ID" \
-            --credential "$RUNNER_TEMP/lem-google-service-account.json"
-          Rscript scripts/reporting/write_workflow09_stage_summary.R --stage W03 --run-id "$GITHUB_RUN_ID"
-          Rscript scripts/reporting/refresh_workflow09_input_manifest.R
-          git add docs/current_run/current_run_status.json docs/reporting/workflow_09_inputs/current
+          git pull --rebase origin migration/w00-w03
+          Rscript - <<'RS'
+          library(jsonlite)
+          p <- 'docs/current_run/current_run_status.json'
+          x <- fromJSON(p,simplifyVector=FALSE)
+          stopifnot(identical(x$branch,'migration/w00-w03'),identical(x$first_run,TRUE))
+          x$status <- 'w03_published'
+          x$workflow03_pointer_path <- paste0('docs/publication_status/zenodo/run-',Sys.getenv('GITHUB_RUN_ID'),'.json')
+          stopifnot(file.exists(x$workflow03_pointer_path))
+          writeLines(toJSON(x,auto_unbox=TRUE,pretty=TRUE,null='null'),p)
+          RS
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/current_run/current_run_status.json
           if ! git diff --cached --quiet; then
-            git commit -m "Update current-run status through W03 [skip ci]"
-            git pull --rebase origin main
-            git push origin HEAD:main
+            git commit -m "Record W03 publication in ILRI current-run status [skip ci]"
+            git pull --rebase origin migration/w00-w03
+            git push origin HEAD:migration/w00-w03
           fi
 
       - name: Upload validated Workflow 03 handoff cache
@@ -321,7 +320,7 @@ jobs:
           fi
           gh workflow run workflow_04_production.yml \
             --repo "$GITHUB_REPOSITORY" \
-            --ref main \
+            --ref migration/w00-w03 \
             -f execution_pathway=github \
             -f first_run="$FIRST_RUN" \
             -f lean_pointer_path="$LEAN_POINTER" \
