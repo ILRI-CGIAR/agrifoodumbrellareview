@@ -144,7 +144,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  WORKFLOW02_BRANCH: main
+  WORKFLOW02_BRANCH: migration/w00-w03
 
 jobs:
   prepare:
