@@ -68,14 +68,25 @@ write_json(list(database="EconLit",database_code="ecn",fields=c("TI","AB"),date_
 uid <- Sys.getenv("EBSCO_EHOST_UID");pwd <- Sys.getenv("EBSCO_EHOST_PWD")
 if(!nzchar(uid)||!nzchar(pwd))stop("EBSCO_EHOST_UID / EBSCO_EHOST_PWD unavailable")
 fetch <- function(endpoint, params) {
-  r <- request(paste0("https://eit.ebscohost.com/Services/SearchService.asmx/",endpoint)) |>
-    req_url_query(!!!params) |> req_timeout(150) |> req_error(is_error=function(x)FALSE) |> req_perform()
-  status <- resp_status(r)
-  if(status!=200L) stop(sprintf("EBSCO %s HTTP %d: %s",endpoint,status,substr(resp_body_string(r),1,500)))
-  x <- read_xml(resp_body_raw(r))
-  err <- xml_find_first(x,"//*[local-name()='Error' or local-name()='error']")
-  if(!inherits(err,"xml_missing")) stop(sprintf("EBSCO %s API error: %s",endpoint,xml_text(err)))
-  x
+  last_error <- ""
+  for(attempt in seq_len(5L)) {
+    outcome <- tryCatch({
+      r <- request(paste0("https://eit.ebscohost.com/Services/SearchService.asmx/",endpoint)) |>
+        req_url_query(!!!params) |> req_timeout(150) |>
+        req_error(is_error=function(x)FALSE) |> req_perform()
+      status <- resp_status(r)
+      if(status != 200L) stop(sprintf("HTTP %d",status))
+      x <- read_xml(resp_body_raw(r))
+      err <- xml_find_first(x,"//*[local-name()='Error' or local-name()='error']")
+      if(!inherits(err,"xml_missing")) stop(sprintf("API error: %s",xml_text(err)))
+      x
+    },error=identity)
+    if(!inherits(outcome,"error")) return(outcome)
+    last_error <- conditionMessage(outcome)
+    message(sprintf("EBSCO %s attempt %d/5 failed: %s",endpoint,attempt,last_error))
+    if(attempt < 5L) Sys.sleep(min(30,2^attempt))
+  }
+  stop(sprintf("EBSCO %s failed after 5 attempts: %s",endpoint,last_error),call.=FALSE)
 }
 info <- fetch("Info",list(prof=uid,pwd=pwd,authType="profile"))
 dbs <- xml_find_all(info,"//*[local-name()='db']")
