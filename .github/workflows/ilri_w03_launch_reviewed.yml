@@ -1,0 +1,19 @@
+name: ILRI launch original W03 from reviewed W02 lean pointer
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths: ['.github/workflows/ilri_w03_launch_reviewed.yml']
+permissions:
+  contents: write
+  actions: write
+jobs:
+  w03:
+    uses: ./.github/workflows/workflow_03_production.yml
+    with:
+      first_run: true
+      limit: '0'
+      batch_size: '100'
+      publish: true
+      auto_launch_w04: false
+      lean_pointer_path: 'docs/compaction/zenodo/run-42418084454.json'
+    secrets: inherit
