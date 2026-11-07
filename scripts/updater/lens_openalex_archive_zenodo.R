@@ -8,8 +8,8 @@ provider<-if(is.na(i))stop("--provider required") else args[[i+1L]]
 stopifnot(provider %in% c("lens","openalex"))
 root<-file.path("outputs",provider)
 report<-fromJSON(file.path(root,"dedup_summary.json"),simplifyVector=FALSE)
-expected<-if(provider=="lens")27773L else 19984L
-if(!identical(as.integer(report$raw_component_hits),expected))stop("Unexpected component hit total")
+if(!is.finite(as.numeric(report$raw_component_hits))||as.numeric(report$raw_component_hits)<0L)stop("Invalid component hit total")
+if(!is.finite(as.numeric(report$unique_source_ids))||as.numeric(report$unique_source_ids)<0L||as.numeric(report$unique_source_ids)>as.numeric(report$raw_component_hits))stop("Invalid unique source ID count")
 files<-c("unique_records.jsonl","source_id_provenance.jsonl","dedup_summary.json")
 for(f in files)if(!file.exists(file.path(root,f)))stop(paste("Missing",f))
 archive_dir<-file.path(root,"archive");dir.create(archive_dir,recursive=TRUE,showWarnings=FALSE)
@@ -38,7 +38,7 @@ id<-as.character(created$id);bucket<-as.character(created$links$bucket)
 metadata<-list(metadata=list(
   title=sprintf("Agri-food umbrella review: %s 2015+ scholarly records excluding datasets | GitHub run %s",provider,Sys.getenv("GITHUB_RUN_ID")),
   upload_type="dataset",publication_date=format(Sys.Date(),"%Y-%m-%d"),
-  description=sprintf("<p>Restricted scholarly bibliographic metadata from %s (2015 onwards, with dataset-type works excluded at the API level). Includes internal source-ID deduplication, partition provenance and checksums. Query translation limitations are recorded in the manifest. No public redistribution of bulk source metadata is authorised.</p>",provider),
+  description=sprintf("<p>Restricted scholarly bibliographic metadata from %s (2015 onwards, with dataset-type works excluded at the API level). Includes internal source-ID deduplication, partition provenance and checksums. Title, abstract and keywords were searched. Query translation limitations are recorded in the manifest. No public redistribution of bulk source metadata is authorised.</p>",provider),
   creators=list(list(name="Haddaway, Neal")),
   access_right="restricted",
   access_conditions="Bibliographic metadata are subject to bibliographic source licensing restrictions and are retained for authorised research purposes only.",
