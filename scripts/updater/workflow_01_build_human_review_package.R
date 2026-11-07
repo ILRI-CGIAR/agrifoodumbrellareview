@@ -22,6 +22,12 @@ source_run_id <- arg("--source-run-id")
 recipient <- arg("--recipient","nealhaddaway@gmail.com")
 repository <- arg("--repository",Sys.getenv("GITHUB_REPOSITORY","thesalmonandthetomato/LivingEvidenceMap"))
 workflow_run_id <- arg("--workflow-run-id",Sys.getenv("GITHUB_RUN_ID",""))
+review_id <- arg("--review-id","")
+review_sheet_id <- arg("--review-sheet-id","")
+if(xor(nzchar(review_id),nzchar(review_sheet_id)))
+  stop("W01 human-review package requires both non-empty review identifiers",call.=FALSE)
+if(!nzchar(review_id)) review_id <- NULL
+if(!nzchar(review_sheet_id)) review_sheet_id <- NULL
 if (any(vapply(list(input_path,output_dir,source_run_id),is.null,logical(1)))) {
   stop("Required: --input --output-dir --source-run-id",call.=FALSE)
 }
@@ -50,6 +56,8 @@ manifest <- list(
   source_workflow01_run_id=source_run_id,
   adjudication_workflow_run_id=workflow_run_id,
   repository=repository,
+  review_id=review_id,
+  google_sheet_id=review_sheet_id,
   status=if(length(cases)) "awaiting_human_review" else "no_human_review_required",
   pending_count=length(cases),
   review_case_ids=ids,

@@ -18,7 +18,7 @@ arg <- function(flag, default = NULL) {
 
 input_dir <- arg("--input-dir")
 output_dir <- arg("--output-dir")
-source_run_id <- arg("--source-run-id", "35585544686")
+source_run_id <- arg("--source-run-id", Sys.getenv("GITHUB_RUN_ID", ""))
 start_row <- as.integer(arg("--start-row", "1"))
 end_row_arg <- arg("--end-row", NULL)
 
@@ -115,13 +115,6 @@ meta <- fread(meta_path, na.strings = c("", "NA"))
 if (!"idx" %in% names(meta)) stop("normalised_metadata.csv lacks idx", call. = FALSE)
 setkey(meta, idx)
 
-labels_path <- file.path("data", "validation", "workflow02_v2_human_labels_2026-09-21.csv")
-if (!file.exists(labels_path)) stop("Human validation label file not found", call. = FALSE)
-labels <- fread(labels_path)
-if (!all(c("record_i","record_j","truth") %in% names(labels))) stop("Human validation labels lack required columns", call. = FALSE)
-labels[, pair_key := paste(pmin(record_i, record_j), pmax(record_i, record_j), sep = "::")]
-if (anyDuplicated(labels$pair_key)) stop("Duplicate pair keys in human validation labels", call. = FALSE)
-progress("validation labels loaded", nrow(labels), nrow(labels))
 
 normalise_visible_title <- function(s) {
   if (is.na(s) || !nzchar(trimws(s))) return(NA_character_)
@@ -647,44 +640,6 @@ changed_by_rule <- x[decision_changed == TRUE, .N, by = rule][order(rule)]
 remaining_auto_by_rule <- x[rescored_classification == "duplicate", .N, by = rescored_rule][order(rescored_rule)]
 
 
-x[, pair_key := paste(pmin(record_i, record_j), pmax(record_i, record_j), sep = "::")]
-eval <- merge(
-  labels,
-  x[, .(pair_key, classification, rule, rescored_classification, rescored_rule,
-        decision_changed, identifier_conflict, one_abstract_missing,
-        first_author_match, journal_match, preprint_pair,
-        review_route, manual_review_needed)],
-  by = "pair_key",
-  all.x = TRUE,
-  sort = FALSE
-)
-eval[, labelled_pair_found := !is.na(rescored_classification)]
-eval[, predicted_duplicate := rescored_classification == "duplicate"]
-eval[, truth_duplicate := truth == "duplicate"]
-eval[, outcome := fifelse(!labelled_pair_found, "not_in_saved_sample",
-                   fifelse(truth_duplicate & predicted_duplicate, "TP",
-                   fifelse(!truth_duplicate & predicted_duplicate, "FP",
-                   fifelse(truth_duplicate & !predicted_duplicate, "FN", "TN"))))]
-fwrite(eval, file.path(output_dir, "human_validation_results.csv"))
-
-tp <- eval[outcome == "TP", .N]
-fp <- eval[outcome == "FP", .N]
-fn <- eval[outcome == "FN", .N]
-tn <- eval[outcome == "TN", .N]
-precision <- if ((tp + fp) > 0L) tp / (tp + fp) else NA_real_
-recall <- if ((tp + fn) > 0L) tp / (tp + fn) else NA_real_
-specificity <- if ((tn + fp) > 0L) tn / (tn + fp) else NA_real_
-validation_summary <- list(
-  labelled_pairs = nrow(labels),
-  labelled_pairs_found = sum(eval$labelled_pair_found),
-  tp = tp, fp = fp, fn = fn, tn = tn,
-  precision = precision,
-  recall = recall,
-  specificity = specificity,
-  changed_labelled_pairs = sum(eval$decision_changed %in% TRUE, na.rm = TRUE)
-)
-progress("human validation scored", validation_summary$labelled_pairs_found, validation_summary$labelled_pairs,
-         paste("TP", tp, "FP", fp, "FN", fn, "TN", tn))
 
 summary <- list(
   workflow = "01_deduplication_identifier_rescore",

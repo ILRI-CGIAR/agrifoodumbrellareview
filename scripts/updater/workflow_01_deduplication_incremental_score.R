@@ -40,10 +40,26 @@ find_one <- function(name) {
 
 meta <- fread(find_one("normalised_metadata.csv"), na.strings = c("", "NA"))
 all_pairs <- fread(find_one("all_candidate_pairs.csv"), na.strings = c("", "NA"))
+# Require exact identity agreement whenever pair coordinates include source IDs.
+id_cols <- c("source_id_i","source_record_id_i","source_id_j","source_record_id_j")
+if(any(id_cols%in%names(all_pairs))) {
+ if(!all(id_cols%in%names(all_pairs)))stop("Partial pair identity columns",call.=FALSE)
+ ii<-as.integer(all_pairs$record_i);jj<-as.integer(all_pairs$record_j)
+ if(anyNA(ii)||anyNA(jj)||any(ii<1L|ii>nrow(meta)|jj<1L|jj>nrow(meta)))
+   stop("Scoring pair indices invalid",call.=FALSE)
+ ok<-all_pairs$source_id_i==meta$source[ii] &
+     all_pairs$source_record_id_i==meta$source_record_id[ii] &
+     all_pairs$source_id_j==meta$source[jj] &
+     all_pairs$source_record_id_j==meta$source_record_id[jj]
+ if(anyNA(ok)||!all(ok))stop("Scoring source IDs mismatch: refusing changed row ordering",call.=FALSE)
+}
+
 if (!nrow(all_pairs)) {
   dir.create(output_dir,recursive=TRUE,showWarnings=FALSE)
   empty <- data.table(
     record_i=integer(),record_j=integer(),source_i=character(),source_j=character(),
+    source_id_i=character(),source_record_id_i=character(),
+    source_id_j=character(),source_record_id_j=character(),
     title_i=character(),title_j=character(),doi_i=character(),doi_j=character(),
     blocks=character(),title_similarity=numeric(),title_containment=logical(),
     exact_title=logical(),exact_abstract=logical(),ordered_coverage=numeric(),
@@ -326,6 +342,8 @@ score_one <- function(i,j,blocks) {
   else if(am$strong&&diff_doi&&!same_family) {cls<-"review";rule<-"strong_content_material_doi_conflict"}
 
   data.table(record_i=i,record_j=j,source_i=a$source,source_j=b$source,
+             source_id_i=a$source,source_record_id_i=a$source_record_id,
+             source_id_j=b$source,source_record_id_j=b$source_record_id,
              title_i=a$title,title_j=b$title,doi_i=a$doi_norm,doi_j=b$doi_norm,
              blocks=blocks,title_similarity=tsim,title_containment=containment,
              exact_title=exact_title,exact_abstract=exact_abs,

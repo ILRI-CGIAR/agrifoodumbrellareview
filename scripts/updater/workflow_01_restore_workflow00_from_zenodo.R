@@ -17,6 +17,7 @@ arg <- function(flag, default=NULL) {
 pointer_path <- arg("--pointer")
 output_root <- arg("--output-root")
 source_filter <- arg("--sources","")
+expected_review_id <- arg("--review-id","")
 if (is.null(pointer_path) || is.null(output_root)) {
   stop("Required: --pointer --output-root",call.=FALSE)
 }
@@ -27,6 +28,7 @@ if (!nzchar(token)) stop("ZENODO_ACCESS_TOKEN is required",call.=FALSE)
 
 x <- fromJSON(pointer_path,simplifyVector=FALSE)
 if (!identical(x$status,"published")) stop("Zenodo pointer is not a published archive",call.=FALSE)
+if (nzchar(expected_review_id) && !identical(as.character(x$review_id),expected_review_id)) stop("W00 Zenodo receipt review identity mismatch",call.=FALSE)
 if (!identical(x$visibility,"restricted")) stop("Expected restricted Workflow 00 archive",call.=FALSE)
 if (is.null(x$zenodo_deposition_id) || !nzchar(as.character(x$zenodo_deposition_id))) {
   stop("Pointer lacks zenodo_deposition_id",call.=FALSE)
@@ -70,9 +72,9 @@ names(expected) <- vapply(expected,function(z) z$filename,character(1))
 
 wanted_names <- c(
   vapply(sources,function(src)
-    sprintf("agrifoodumbrellareview_workflow00_run-%s_%s-harvest.tar.gz",x$github_run_id,src),
+    sprintf("LivingEvidenceMap_workflow00_run-%s_%s-harvest.tar.gz",x$github_run_id,src),
     character(1)),
-  sprintf("agrifoodumbrellareview_workflow00_run-%s_manifest.json",x$github_run_id)
+  sprintf("LivingEvidenceMap_workflow00_run-%s_manifest.json",x$github_run_id)
 )
 missing_expected <- setdiff(wanted_names,names(expected))
 if (length(missing_expected)) {
@@ -153,7 +155,7 @@ download_one <- function(filename) {
   dest
 }
 
-manifest_name <- sprintf("agrifoodumbrellareview_workflow00_run-%s_manifest.json",x$github_run_id)
+manifest_name <- sprintf("LivingEvidenceMap_workflow00_run-%s_manifest.json",x$github_run_id)
 manifest_local <- download_one(manifest_name)
 manifest_sha <- digest(file=manifest_local,algo="sha256",serialize=FALSE)
 if (!is.null(x$manifest_sha256) && !identical(tolower(manifest_sha),tolower(as.character(x$manifest_sha256)))) {
@@ -161,7 +163,7 @@ if (!is.null(x$manifest_sha256) && !identical(tolower(manifest_sha),tolower(as.c
 }
 
 for (src in sources) {
-  filename <- sprintf("agrifoodumbrellareview_workflow00_run-%s_%s-harvest.tar.gz",x$github_run_id,src)
+  filename <- sprintf("LivingEvidenceMap_workflow00_run-%s_%s-harvest.tar.gz",x$github_run_id,src)
   tar_path <- download_one(filename)
   utils::untar(tar_path,exdir=output_root)
   src_dir <- file.path(output_root,src)

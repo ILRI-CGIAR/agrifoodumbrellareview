@@ -51,6 +51,9 @@ if (!is.null(input_manifest_path)) {
   }
 }
 
+first_run <- tolower(arg("--first-run","false"))
+if(!first_run %in% c("true","false"))stop("--first-run must be true or false",call.=FALSE)
+first_run <- identical(first_run,"true")
 old_metadata_path <- arg("--old-metadata",NULL)
 old_manifestation_map_path <- arg("--old-manifestation-map",NULL)
 output_dir <- arg("--output-dir")
@@ -64,7 +67,7 @@ if (!is.finite(repeated_abstract_min_title_diversity) || repeated_abstract_min_t
 validate_index_only <- identical(tolower(arg("--validate-index-only", "false")), "true")
 
 if (is.null(output_dir) || !length(paths)) stop("Required: --output-dir and at least one source input",call.=FALSE)
-if (is.null(old_metadata_path) && is.null(old_manifestation_map_path)) {
+if (!first_run && is.null(old_metadata_path) && is.null(old_manifestation_map_path)) {
   stop("Provide either --old-metadata or --old-manifestation-map", call.=FALSE)
 }
 if (is.na(score_n) || score_n < 1L) stop("--score-n must be positive", call. = FALSE)
@@ -281,6 +284,11 @@ for (src in names(paths)) {
   checkpoint(paste0("normalised_",src),sum(n_by_source),NULL,list(source_counts=as.list(n_by_source)))
 }
 meta <- rbindlist(rows,use.names=TRUE,fill=TRUE)
+if(anyNA(meta$source)||anyNA(meta$source_record_id)||
+   any(!nzchar(trimws(as.character(meta$source))))||
+   any(!nzchar(trimws(as.character(meta$source_record_id)))))
+ stop("W00 handoff contains missing source identity",call.=FALSE)
+
 meta[, corpus_key := paste(source,source_record_id,sep="::")]
 if (anyDuplicated(meta$corpus_key)) stop("Duplicate source namespace + record ID",call.=FALSE)
 
@@ -291,7 +299,9 @@ if (anyDuplicated(meta$corpus_key)) stop("Duplicate source namespace + record ID
 # source order. Historic pair decisions therefore continue to address the same
 # manifestation indices without blocking legitimate metadata repairs.
 old_state_path <- if (!is.null(old_metadata_path)) old_metadata_path else old_manifestation_map_path
-old_meta <- fread(old_state_path, na.strings=c("", "NA"))
+if(first_run && !is.null(old_state_path)) stop("First run may not ingest historical metadata",call.=FALSE)
+old_meta <- if(first_run) data.table(source=character(),source_record_id=character()) else
+  fread(old_state_path, na.strings=c("", "NA"))
 stopifnot(all(c("source","source_record_id") %in% names(old_meta)))
 if ("idx" %in% names(old_meta)) setorder(old_meta,idx)
 old_keys <- paste(old_meta$source,old_meta$source_record_id,sep="::")
@@ -513,6 +523,26 @@ for (k in seq_along(pair_keys)) {
   light[[k]] <- data.table(record_i=z$i,record_j=z$j,blocks=paste(sort(unique(z$blocks)),collapse=";"))
 }
 candidate_dt <- rbindlist(light)
+# Persist explicit source identities alongside all positional indices.
+# Positional indices are ephemeral computational coordinates, not pair IDs.
+if(nrow(candidate_dt)) {
+  candidate_dt[, `:=`(
+    source_id_i=as.character(meta$source[record_i]),
+    source_record_id_i=as.character(meta$source_record_id[record_i]),
+    source_id_j=as.character(meta$source[record_j]),
+    source_record_id_j=as.character(meta$source_record_id[record_j])
+  )]
+  identity <- function(src,id) paste0(nchar(src,type="bytes"),":",src,nchar(id,type="bytes"),":",id)
+  ki <- identity(candidate_dt$source_id_i,candidate_dt$source_record_id_i)
+  kj <- identity(candidate_dt$source_id_j,candidate_dt$source_record_id_j)
+  first <- ifelse(ki<=kj,ki,kj)
+  second <- ifelse(ki<=kj,kj,ki)
+  candidate_dt[,stable_pair_key:=vapply(seq_along(first),function(k)
+    digest(paste0(nchar(first[[k]],type="bytes"),":",first[[k]],second[[k]]),
+           algo="sha256",serialize=FALSE),character(1))]
+  if(anyDuplicated(candidate_dt$stable_pair_key))
+    stop("Candidate pairs have repeated immutable identities",call.=FALSE)
+}
 
 # Incremental extension: every candidate in memory already contains at least
 # one newly appended manifestation. Historical old-old decisions remain restored
@@ -638,6 +668,9 @@ for (k in seq_len(nrow(score_sample))) {
 
   scored[[k]]<-data.table(
     record_i=i,record_j=j,source_i=a$source,source_j=b$source,
+    source_id_i=a$source,source_record_id_i=a$source_record_id,
+    source_id_j=b$source,source_record_id_j=b$source_record_id,
+    stable_pair_key=score_sample$stable_pair_key[[k]],
     title_i=a$title,title_j=b$title,doi_i=a$doi_norm,doi_j=b$doi_norm,
     blocks=blocks,title_similarity=tsim,title_containment=containment,
     exact_title=exact_title,exact_abstract=exact_abs,

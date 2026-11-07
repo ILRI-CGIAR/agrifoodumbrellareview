@@ -88,59 +88,13 @@ key_of <- function(x) scalar(or_else(x$key,or_else(x$filename,x$name)))
 keys <- vapply(entries,function(x)or_else(key_of(x),""),character(1))
 required <- c("source_registry.json","records.jsonl","manifest.json","SHA256SUMS")
 missing <- setdiff(required,keys)
+if (length(missing)) stop(sprintf("Published W00 manual RIS record missing: %s",paste(missing,collapse=", ")),call.=FALSE)
 
 download_raw <- function(name, timeout=1800) {
   entry <- entries[[match(name,keys)]]
   url <- scalar(entry$links$content)
   if (is.null(url)) url <- paste0(files_url,"/",URLencode(name,reserved=TRUE),"/content")
   resp_body_raw(perform(request(url)|>auth(),200L,paste0("download ",name),timeout))
-}
-
-# Older manual searches contain pre-normalised W00 files. A newly published
-# concept expansion may contain only the original restricted RIS exports.
-# In that case, normalise ONLY this new archive in isolation; never replay the
-# original September search or silently combine separate search events.
-if (length(missing)) {
-  if (length(missing) != length(required)) {
-    stop(sprintf("Incomplete W00 derived-file set in Zenodo %s: %s",dep_id,paste(missing,collapse=", ")),call.=FALSE)
-  }
-  ris_keys <- keys[grepl("\\.ris$",keys,ignore.case=TRUE)]
-  if (!length(ris_keys)) stop(sprintf("Zenodo %s has no W00 derived package or RIS files",dep_id),call.=FALSE)
-  work <- tempfile(paste0("w00_new_ris_",expected_source,"_"))
-  dir.create(work,recursive=TRUE)
-  raw_paths <- file.path(work,basename(ris_keys))
-  if (anyDuplicated(basename(ris_keys))) stop("Duplicate RIS basenames in published archive",call.=FALSE)
-  for (i in seq_along(ris_keys)) writeBin(download_raw(ris_keys[[i]],1800),raw_paths[[i]])
-  derived_registry <- local_registry
-  derived_registry$input$files <- lapply(seq_along(raw_paths),function(i) {
-    list(filename=basename(raw_paths[[i]]),bytes=unname(file.info(raw_paths[[i]])$size),
-         sha256=digest(file=raw_paths[[i]],algo="sha256",serialize=FALSE))
-  })
-  derived_registry$input$expected_chunk_count <- length(raw_paths)
-  registry_tmp <- file.path(work,"source_registry.json")
-  writeLines(toJSON(derived_registry,auto_unbox=TRUE,pretty=TRUE,null="null"),registry_tmp)
-  target <- file.path(work,"derived")
-  commands <- c("scripts/updater/workflow_00_ris_ingestion.R",
-                unlist(lapply(raw_paths,function(p)c("--ris",shQuote(p))),use.names=FALSE),
-                "--registry",shQuote(registry_tmp),"--output-dir",shQuote(target))
-  status <- system2(file.path(R.home("bin"),"Rscript"),commands)
-  if (!identical(as.integer(status),0L)) stop("Published expansion RIS normalization failed",call.=FALSE)
-  handoff <- file.path(target,"handoff","records.jsonl")
-  manifest_path <- file.path(target,"manifest.json")
-  if (!file.exists(handoff)) stop("No RIS handover was produced",call.=FALSE)
-  manifest_files <- list.files(target,pattern="manifest\\.json$",recursive=TRUE,full.names=TRUE)
-  if (!length(manifest_files)) stop("RIS normalization did not create a manifest",call.=FALSE)
-  dir.create(dirname(output_path),recursive=TRUE,showWarnings=FALSE)
-  if (!file.copy(handoff,output_path,overwrite=TRUE)) stop("Cannot copy RIS handover",call.=FALSE)
-  lines <- readLines(output_path,warn=FALSE,encoding="UTF-8")
-  lines <- lines[nzchar(trimws(lines))]
-  expected <- suppressWarnings(as.integer(local_registry$search$reported_results))
-  if (length(expected) && !is.na(expected) && length(lines)!=expected) {
-    stop(sprintf("Published RIS count mismatch: expected %d, parsed %d",expected,length(lines)),call.=FALSE)
-  }
-  cat(sprintf("PASS: normalised new published RIS expansion source=%s doi=%s records=%d\\n",
-              expected_source,doi,length(lines)))
-  quit(save="no",status=0)
 }
 
 archived_registry_raw <- download_raw("source_registry.json",120)

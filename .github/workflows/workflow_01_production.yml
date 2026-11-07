@@ -1,0 +1,1940 @@
+name: Workflow 01 - Production deduplication and canonicalisation
+run-name: W01 ${{ inputs.review_id || 'legacy' }} ${{ inputs.shiny_request_id || github.run_id }}
+
+on:
+  workflow_call:
+    inputs:
+      execution_pathway:
+        required: false
+        default: github
+        type: string
+      shiny_request_id:
+        required: false
+        default: ""
+        type: string
+      review_id:
+        required: false
+        default: ""
+        type: string
+      review_sheet_id:
+        required: false
+        default: ""
+        type: string
+      first_run:
+        description: Initialise an entirely new review, with no prior baseline
+        required: false
+        default: false
+        type: boolean
+      workflow00_pointer_path:
+        required: false
+        type: string
+      previous_workflow01_pointer_path:
+        required: false
+        default: ""
+        type: string
+      model:
+        required: false
+        default: gpt-5.6-luna
+        type: string
+      auto_threshold:
+        required: false
+        default: '0.95'
+        type: string
+      max_llm_cases:
+        required: false
+        default: 5000
+        type: number
+      run_review_llm:
+        required: false
+        default: false
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      execution_pathway:
+        description: "Execution route (review-specific requests remain preflight-only)"
+        required: false
+        default: github
+        type: choice
+        options: [github, shiny]
+      shiny_request_id:
+        description: "Unique launch request identifier for read-only run monitoring"
+        required: false
+        default: ""
+        type: string
+      review_id:
+        description: "Review identity for Shiny preflight"
+        required: false
+        default: ""
+        type: string
+      review_sheet_id:
+        description: "Review Google Sheet ID for Shiny preflight"
+        required: false
+        default: ""
+        type: string
+      first_run:
+        description: Initialise an entirely new review, with no prior baseline
+        required: false
+        default: false
+        type: boolean
+      workflow00_pointer_path:
+        description: 'Workflow 00 state or archive pointer path on main'
+        required: false
+        type: string
+      previous_workflow01_pointer_path:
+        description: 'Latest Workflow 01 pointer path (full baseline or delta)'
+        required: false
+        default: ""
+        type: string
+      model:
+        description: 'Duplicate adjudication model'
+        required: true
+        default: gpt-5.6-luna
+        type: string
+      auto_threshold:
+        description: 'Automatic LLM decision confidence threshold'
+        required: true
+        default: '0.95'
+        type: string
+      max_llm_cases:
+        description: 'Hard safety ceiling on pairwise LLM adjudications; workflow stops before API calls if exceeded'
+        required: true
+        default: 5000
+        type: number
+      run_review_llm:
+        description: 'Enable review-specific LLM adjudication (costs API credits)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  # Serialize W01 runs within a review, without blocking independent reviews.
+  # Retain the legacy group when no explicit review identity is supplied.
+  group: ${{ inputs.review_id != '' && format('workflow01-review-{0}', inputs.review_id) || 'workflow01-production' }}
+  cancel-in-progress: false
+
+env:
+  WORKFLOW01_BRANCH: main
+  WORKFLOW00_REPORTING_BRANCH: main
+
+jobs:
+  review-input-preflight:
+    if: ${{ inputs.execution_pathway == 'shiny' || inputs.review_id != '' || inputs.review_sheet_id != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install read-only resolver dependencies
+        shell: Rscript {0}
+        run: install.packages(c('googlesheets4','jsonlite','digest','httr2'))
+      - name: Resolve review-specific W00 Zenodo receipt without running W01
+        env:
+          LEM_SHEET_ID: ${{ inputs.review_sheet_id }}
+          LEM_REVIEW_ID: ${{ inputs.review_id }}
+          LEM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$LEM_SHEET_ID" ] || [ -z "$LEM_REVIEW_ID" ]; then
+            echo "Review-specific W01 requires both review_id and review_sheet_id" >&2
+            exit 1
+          fi
+          if [ -n "${{ inputs.shiny_request_id }}" ] && ! [[ "${{ inputs.shiny_request_id }}" =~ ^[A-Za-z0-9._-]{8,80}$ ]]; then
+            echo "Invalid Shiny W01 request identifier" >&2
+            exit 1
+          fi
+          test -n "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON"
+          printf '%s' "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/lem-w01-credentials.json"
+          chmod 600 "$RUNNER_TEMP/lem-w01-credentials.json"
+          Rscript scripts/updater/workflow_01_resolve_review_w00_receipt.R \
+            --sheet-id "$LEM_SHEET_ID" \
+            --credential "$RUNNER_TEMP/lem-w01-credentials.json" \
+            --review-id "$LEM_REVIEW_ID" \
+            --output "$RUNNER_TEMP/review-w00-pointer.json" \
+            --input-manifest "$RUNNER_TEMP/review-w01-input-manifest.json"
+          # Restore the identical authoritative W00 archive used by the GitHub pathway.
+          # This preflight is read-only: no deduplication, registry update or publication.
+          ZENODO_ACCESS_TOKEN="${{ secrets.ZENODO_ACCESS_TOKEN }}" \
+            Rscript scripts/updater/workflow_01_restore_workflow00_from_zenodo.R \
+              --pointer "$RUNNER_TEMP/review-w00-pointer.json" \
+              --review-id "$LEM_REVIEW_ID" \
+              --output-root "$RUNNER_TEMP/w01-restored-w00"
+          ZENODO_ACCESS_TOKEN="${{ secrets.ZENODO_ACCESS_TOKEN }}" \
+            Rscript scripts/updater/workflow_01_restore_review_manual_ris.R \
+              --input-manifest "$RUNNER_TEMP/review-w01-input-manifest.json" \
+              --output-root "$RUNNER_TEMP/w01-restored-manual-ris"
+          # Prepare each review-specific API source with its existing W01 adapter.
+          mkdir -p "$RUNNER_TEMP/w01-prepared-api"
+          mapfile -t REVIEW_SOURCES < <(Rscript -e 'x<-jsonlite::fromJSON(commandArgs(TRUE)[1]);cat(unlist(x$sources,use.names=FALSE),sep=intToUtf8(10))' "$RUNNER_TEMP/review-w00-pointer.json")
+          for source in "${REVIEW_SOURCES[@]}"; do
+            root="$RUNNER_TEMP/w01-restored-w00/$source"
+            out="$RUNNER_TEMP/w01-prepared-api/$source"
+            mkdir -p "$out"
+            case "$source" in
+              scopus|openalex|agricola|wos)
+                case "$source" in
+                  scopus) script=workflow_01s_scopus_sidecar_adapter.R; result=scopus_sidecar_records.jsonl ;;
+                  openalex) script=workflow_01u_openalex_sidecar_adapter.R; result=openalex_sidecar_records.jsonl ;;
+                  agricola) script=workflow_01v_agricola_sidecar_adapter.R; result=agricola_sidecar_records.jsonl ;;
+                  wos) script=workflow_01w_wos_starter_sidecar_adapter.R; result=wos_starter_sidecar_records.jsonl ;;
+                esac
+                Rscript "scripts/updater/$script" --input-dir "$root" --output-dir "$out"
+                test -f "$out/$result"
+                ;;
+              *)
+                p="$(find "$root" -type f -name records.jsonl -print -quit)"
+                if [ -n "$p" ]; then
+                  cp "$p" "$out/records.jsonl"
+                else
+                  case "$source" in
+                    pubmed) code=MED ;;
+                    ethos) code=ETH ;;
+                    cba) code=CBA ;;
+                    epmc_preprints) code=PPR ;;
+                    *) echo "No supported prepared W00 handoff for $source" >&2; exit 1 ;;
+                  esac
+                  Rscript scripts/updater/workflow_01x_europe_pmc_sidecar_adapter.R \
+                    --input-dir "$root" --output-dir "$out" \
+                    --source-code "$code" --source-slug "$source" --source-collection "$source" --allow-empty true
+                  mv "$out/${source}_sidecar_records.jsonl" "$out/records.jsonl"
+                fi
+                ;;
+            esac
+          done
+          Rscript scripts/updater/workflow_01_review_prepared_api_catalogue.R \
+            --w00-pointer "$RUNNER_TEMP/review-w00-pointer.json" \
+            --restored-root "$RUNNER_TEMP/w01-prepared-api" \
+            --output "$RUNNER_TEMP/review-w01-api-catalogue.json"
+          Rscript scripts/updater/workflow_01_review_source_catalogue.R \
+            --input-manifest "$RUNNER_TEMP/review-w01-input-manifest.json" \
+            --api-catalogue "$RUNNER_TEMP/review-w01-api-catalogue.json" \
+            --manual-manifest "$RUNNER_TEMP/w01-restored-manual-ris/manifest.json" \
+            --output "$RUNNER_TEMP/review-w01-combined-catalogue.json"
+          Rscript scripts/updater/workflow_01_prepare_source_catalogue.R \
+            --catalogue "$RUNNER_TEMP/review-w01-combined-catalogue.json" \
+            --output-manifest "$RUNNER_TEMP/review-w01-source-inputs.json"
+          # Exercise the actual shared first-run union code using the authoritative
+          # review-specific 28-source manifest. No candidates or LLM calls are created.
+          mkdir -p "$RUNNER_TEMP/w01-empty-prior"
+          Rscript scripts/updater/workflow_01_deduplication_build_union.R \
+            --first-run true \
+            --old-dir "$RUNNER_TEMP/w01-empty-prior" \
+            --input-manifest "$RUNNER_TEMP/review-w01-source-inputs.json" \
+            --expected-review-id "$LEM_REVIEW_ID" \
+            --expected-sheet-id "$LEM_SHEET_ID" \
+            --expected-prior-manifestations 0 \
+            --output-dir "$RUNNER_TEMP/w01-reviewed-union"
+          Rscript - <<'RS'
+          library(jsonlite)
+          root <- Sys.getenv("RUNNER_TEMP")
+          sources <- fromJSON(file.path(root,"review-w01-source-inputs.json"),simplifyVector=FALSE)
+          union <- fromJSON(file.path(root,"w01-reviewed-union","source_inputs.json"),simplifyVector=FALSE)
+          if(!identical(as.character(sources$review_id),as.character(union$review_id)) ||
+             !identical(as.character(sources$google_sheet_id),as.character(union$google_sheet_id)) ||
+             !identical(names(sources$sources),names(union$sources)))
+            stop("W01 preflight union provenance mismatch",call.=FALSE)
+          count_records <- function(path) sum(nzchar(trimws(readLines(path,warn=FALSE,encoding="UTF-8"))))
+          actual <- vapply(union$sources,function(z)count_records(as.character(z)),integer(1))
+          expected <- vapply(sources$sources,function(z)count_records(as.character(z)),integer(1))
+          if(!identical(actual,expected))
+            stop("W01 preflight union changed source manifestation counts",call.=FALSE)
+          summary <- read.csv(file.path(root,"w01-reviewed-union","union_source_counts.csv"),stringsAsFactors=FALSE)
+          if(!identical(as.character(summary$source),names(sources$sources)) ||
+             any(summary$preserved_old!=0L) ||
+             !identical(as.integer(summary$union_total),unname(actual)))
+            stop("W01 first-run union count reconciliation failed",call.=FALSE)
+          cat(sprintf("PASS: review-specific W01 union: %d sources, %d manifestations, stable review identity and source order\\n",
+                      length(actual),sum(actual)))
+          RS
+          # Export an immutable, portable copy of this verified 28-source handoff.
+          # The production job can consume this artefact without rerunning W00,
+          # and with no changes to the deduplication algorithms.
+          mkdir -p review_w01_handoff/sources
+          Rscript - <<'RS'
+          library(jsonlite)
+          library(digest)
+          root <- Sys.getenv("RUNNER_TEMP")
+          m <- fromJSON(file.path(root,"review-w01-source-inputs.json"),simplifyVector=FALSE)
+          if(!identical(m$schema,"living-evidence-map-workflow01-source-inputs-v1") ||
+             !nzchar(as.character(m$review_id)) ||
+             !nzchar(as.character(m$google_sheet_id)) ||
+             is.null(names(m$sources)) || !length(m$sources))
+            stop("Cannot export W01 handoff without validated review identity",call.=FALSE)
+          originals <- vapply(m$sources,as.character,character(1))
+          if(any(!grepl("^[a-z0-9][a-z0-9_-]*$",names(originals))))
+            stop("Invalid W01 handoff source identifier",call.=FALSE)
+          portable <- setNames(paste0("review_w01_handoff/sources/",names(originals),".jsonl"),names(originals))
+          hashes <- setNames(character(length(originals)),names(originals))
+          for(src in names(originals)) {
+            if(!file.exists(originals[[src]]) ||
+               !file.copy(originals[[src]],portable[[src]],overwrite=FALSE))
+              stop("Unable to stage verified W01 source ",src,call.=FALSE)
+            old_sha <- digest(file=originals[[src]],algo="sha256",serialize=FALSE)
+            new_sha <- digest(file=portable[[src]],algo="sha256",serialize=FALSE)
+            if(!identical(old_sha,new_sha)) stop("W01 handoff source checksum changed: ",src,call.=FALSE)
+            hashes[[src]] <- new_sha
+          }
+          m$sources <- as.list(portable)
+          write_json(m,"review_w01_handoff/source_inputs.json",auto_unbox=TRUE,pretty=TRUE,null="null")
+          # Preserve the exact review-specific W00 receipt for later checkpoint
+          # creation and resume. Never fall back to the legacy salmon registry.
+          w00_receipt <- file.path(Sys.getenv("RUNNER_TEMP"),"review-w00-pointer.json")
+          if(!file.copy(w00_receipt,"review_w01_handoff/w00_pointer.json",overwrite=FALSE))
+            stop("Unable to include authoritative review W00 receipt",call.=FALSE)
+          write_json(list(
+            schema="living-evidence-map-workflow01-portable-handoff-v1",
+            review_id=m$review_id,google_sheet_id=m$google_sheet_id,
+            sources=as.list(hashes),source_order=names(portable),
+            source_inputs_sha256=digest(file="review_w01_handoff/source_inputs.json",algo="sha256",serialize=FALSE),
+            w00_pointer_sha256=digest(file="review_w01_handoff/w00_pointer.json",algo="sha256",serialize=FALSE)
+          ),"review_w01_handoff/handoff_manifest.json",auto_unbox=TRUE,pretty=TRUE,null="null")
+          cat(sprintf("PASS: staged portable, checksum-verified W01 handoff for %d sources\\n",length(portable)))
+          RS
+          # Keep preflight outputs ephemeral and do not publish research records.
+          rm -rf "$RUNNER_TEMP/w01-reviewed-union" "$RUNNER_TEMP/w01-empty-prior" \
+            "$RUNNER_TEMP/w01-prepared-api" "$RUNNER_TEMP/w01-restored-w00" \
+            "$RUNNER_TEMP/w01-restored-manual-ris"
+          rm -f "$RUNNER_TEMP/review-w00-pointer.json" \
+            "$RUNNER_TEMP/review-w01-input-manifest.json" \
+            "$RUNNER_TEMP/review-w01-api-catalogue.json" \
+            "$RUNNER_TEMP/review-w01-combined-catalogue.json" \
+            "$RUNNER_TEMP/review-w01-source-inputs.json"
+          rm -f "$RUNNER_TEMP/lem-w01-credentials.json"
+          echo "PASS: shared W01 review-specific receipt and input preflight; deduplication intentionally disabled"
+      - name: Retain portable W01 source handoff for downstream production
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow01-review-handoff-${{ github.run_id }}
+          path: review_w01_handoff/
+          retention-days: 7
+          if-no-files-found: error
+  review-handoff-consumer:
+    # Validate the actual cross-job artifact boundary before review-specific
+    # production is enabled; this job never scores or publishes records.
+    needs: review-input-preflight
+    if: ${{ inputs.review_id != '' && inputs.review_sheet_id != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install W01 candidate-processing dependencies
+        shell: Rscript {0}
+        run: |
+          # Match the actual imports of workflow_01_deduplication_build_union.R
+          # and workflow_01_deduplication_incremental_candidates.R.
+          required <- c('jsonlite','digest','data.table','readr','stringdist','stringi','xml2','httr2','googlesheets4')
+          missing <- setdiff(required, rownames(installed.packages()))
+          if(length(missing)) install.packages(missing)
+          still_missing <- required[!vapply(required,requireNamespace,logical(1),quietly=TRUE)]
+          if(length(still_missing)) stop('Missing W01 packages: ',paste(still_missing,collapse=', '))
+          cat('PASS: all W01 candidate-stage R packages available\\n')
+      - uses: actions/download-artifact@v4
+        with:
+          name: workflow01-review-handoff-${{ github.run_id }}
+          path: review_w01_handoff
+      - name: Verify portable W01 handoff in a fresh production runner
+        env:
+          EXPECTED_REVIEW_ID: ${{ inputs.review_id }}
+          EXPECTED_SHEET_ID: ${{ inputs.review_sheet_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript - <<'RS'
+          library(jsonlite)
+          library(digest)
+          root <- "review_w01_handoff"
+          m <- fromJSON(file.path(root,"source_inputs.json"),simplifyVector=FALSE)
+          h <- fromJSON(file.path(root,"handoff_manifest.json"),simplifyVector=FALSE)
+          if(!identical(h$schema,"living-evidence-map-workflow01-portable-handoff-v1") ||
+             !identical(m$schema,"living-evidence-map-workflow01-source-inputs-v1") ||
+             !identical(as.character(h$review_id),Sys.getenv("EXPECTED_REVIEW_ID")) ||
+             !identical(as.character(m$review_id),Sys.getenv("EXPECTED_REVIEW_ID")) ||
+             !identical(as.character(h$google_sheet_id),Sys.getenv("EXPECTED_SHEET_ID")) ||
+             !identical(as.character(m$google_sheet_id),Sys.getenv("EXPECTED_SHEET_ID")))
+            stop("Review identity mismatch in downloaded W01 handoff",call.=FALSE)
+          if(!identical(digest(file=file.path(root,"source_inputs.json"),algo="sha256",serialize=FALSE),
+                        as.character(h$source_inputs_sha256)))
+            stop("Downloaded W01 source manifest checksum mismatch",call.=FALSE)
+          if(!file.exists(file.path(root,"w00_pointer.json")) ||
+             !identical(digest(file=file.path(root,"w00_pointer.json"),algo="sha256",serialize=FALSE),
+                        as.character(h$w00_pointer_sha256)))
+            stop("Review-specific W00 receipt was altered during handoff",call.=FALSE)
+          if(!identical(names(m$sources),names(h$sources)) ||
+             !identical(names(m$sources),unlist(h$source_order,use.names=FALSE)))
+            stop("W01 source order changed across Actions jobs",call.=FALSE)
+          for(src in names(m$sources)) {
+            declared <- as.character(m$sources[[src]])
+            if(!identical(declared,paste0("review_w01_handoff/sources/",src,".jsonl")) ||
+               !file.exists(declared) ||
+               !identical(digest(file=declared,algo="sha256",serialize=FALSE),
+                          as.character(h$sources[[src]])))
+              stop("Downloaded W01 source mismatch: ",src,call.=FALSE)
+          }
+          cat(sprintf("PASS: verified %d review-specific W01 sources across GitHub Actions jobs\\n",
+                      length(m$sources)))
+          RS
+
+      - name: Execute existing W01 manifestation union and candidate generation
+        env:
+          EXPECTED_REVIEW_ID: ${{ inputs.review_id }}
+          EXPECTED_SHEET_ID: ${{ inputs.review_sheet_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow01_union outputs/workflow01_candidates previous_state/workflow01_seed
+          Rscript scripts/updater/workflow_01_deduplication_build_union.R \
+            --first-run true \
+            --old-dir previous_state/workflow01_seed \
+            --input-manifest review_w01_handoff/source_inputs.json \
+            --expected-review-id "$EXPECTED_REVIEW_ID" \
+            --expected-sheet-id "$EXPECTED_SHEET_ID" \
+            --expected-prior-manifestations 0 \
+            --output-dir outputs/workflow01_union
+          Rscript scripts/updater/workflow_01_deduplication_incremental_candidates.R \
+            --input-manifest outputs/workflow01_union/source_inputs.json \
+            --first-run true \
+            --output-dir outputs/workflow01_candidates \
+            --score-n 1 \
+            --workflow01-run-id "$GITHUB_RUN_ID"
+          test -s outputs/workflow01_candidates/normalised_metadata.csv
+          test -s outputs/workflow01_candidates/incremental_summary.json
+          echo "PASS: W01 candidate generation executed against validated review inputs; LLM and publication disabled"
+          # Run the same deterministic scoring and classification stages as
+          # legacy production, without invoking an LLM or writing any result.
+          mkdir -p outputs/workflow01_identifier_assist outputs/workflow01_prescore \
+            outputs/workflow01_incremental_score outputs/workflow01_incremental_rescore \
+            outputs/workflow01_incremental_assisted
+          Rscript scripts/updater/workflow_01_identifier_assist_build.R \
+            --input-manifest outputs/workflow01_union/source_inputs.json \
+            --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+            --prior-manifestations 0 \
+            --output-dir outputs/workflow01_identifier_assist
+          Rscript scripts/updater/workflow_01_identifier_prescore_collapse.R \
+            --candidates outputs/workflow01_candidates/all_candidate_pairs.csv \
+            --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+            --safe-edges outputs/workflow01_identifier_assist/safe_identifier_edges.csv \
+            --output-dir outputs/workflow01_prescore
+          N="$(Rscript -e "x<-data.table::fread('outputs/workflow01_prescore/all_candidate_pairs.csv');cat(max(2000L,nrow(x)))")"
+          Rscript scripts/updater/workflow_01_deduplication_incremental_score.R \
+            --input-dir outputs/workflow01_prescore \
+            --upstream-dir outputs/workflow01_union \
+            --output-dir outputs/workflow01_incremental_score \
+            --target-n "$N" \
+            --sample-key "workflow01-review-$GITHUB_RUN_ID"
+          Rscript scripts/updater/workflow_01_deduplication_identifier_rescore.R \
+            --input-dir outputs/workflow01_incremental_score \
+            --output-dir outputs/workflow01_incremental_rescore \
+            --source-run-id ""
+          Rscript scripts/updater/workflow_01_identifier_inject_decisions.R \
+            --rescored outputs/workflow01_incremental_rescore/rescored_sample.csv \
+            --safe-edges outputs/workflow01_identifier_assist/safe_identifier_edges.csv \
+            --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+            --output outputs/workflow01_incremental_assisted/identifier_assisted_decisions.csv \
+            --audit outputs/workflow01_incremental_assisted/identifier_injection_summary.json
+          Rscript scripts/updater/workflow_01_title_assist_resolve.R \
+            --decisions outputs/workflow01_incremental_assisted/identifier_assisted_decisions.csv \
+            --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+            --output outputs/workflow01_incremental_assisted/final_incremental_decisions.csv \
+            --audit outputs/workflow01_incremental_assisted/title_assist_summary.json
+          test -s outputs/workflow01_incremental_assisted/title_assist_summary.json
+          echo "PASS: W01 deterministic identifier and duplicate scoring stages completed; LLM and publication disabled"
+          mkdir -p outputs/workflow01_pre_adjudication outputs/adjudication
+          Rscript scripts/updater/workflow_01_deduplication_merge_clusters.R \
+            --first-run true \
+            --old-decisions previous_state/identity_bound/final_pair_decisions.csv \
+            --new-decisions outputs/workflow01_incremental_assisted/final_incremental_decisions.csv \
+            --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+            --output-dir outputs/workflow01_pre_adjudication
+          N_REVIEW="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow01_pre_adjudication/summary.json");cat(x$manual_review_pairs)')"
+          if [ "$N_REVIEW" -eq 0 ]; then
+            : > outputs/adjudication/cases.jsonl
+          else
+            Rscript scripts/updater/workflow_01_build_duplicate_adjudication_cases.R \
+              --review-pairs outputs/workflow01_pre_adjudication/manual_review_pairs.csv \
+              --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+              --union-dir outputs/workflow01_union \
+              --output outputs/adjudication/cases.jsonl
+          fi
+          Rscript -e 'library(jsonlite);p<-"outputs/adjudication/cases.jsonl";m<-paste0(p,".manifest.json");stopifnot(file.exists(m));j<-fromJSON(m);n<-length(readLines(p,warn=FALSE));stopifnot(j$cases==n);cat(sprintf("PASS: %d LLM adjudication cases prepared, no API requests sent\\n",n))'
+
+
+
+      - name: Verify review-only model execution authorisation
+        if: ${{ inputs.run_review_llm == true }}
+        env:
+          W01_REVIEW_ID: ${{ inputs.review_id }}
+          W01_REVIEW_SHEET_ID: ${{ inputs.review_sheet_id }}
+          W01_FIRST_RUN: ${{ inputs.first_run }}
+          W01_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          W01_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$W01_REVIEW_ID" && test -n "$W01_REVIEW_SHEET_ID"
+          test "$W01_FIRST_RUN" = "true"
+          test -n "$W01_OPENAI_API_KEY"
+          test -n "$W01_GOOGLE_SERVICE_ACCOUNT_JSON"
+          echo "Review-specific first-run model route authorised; legacy production remains isolated"
+
+      - name: Preflight LLM adjudication budget
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true }}
+        env:
+          MAX_LLM_CASES: ${{ inputs.max_llm_cases }}
+        shell: Rscript {0}
+        run: |
+          suppressPackageStartupMessages(library(jsonlite))
+          `%||%` <- function(x,y) if(is.null(x)) y else x
+          p <- 'outputs/adjudication/cases.jsonl'
+          lines <- if(file.exists(p)) readLines(p,warn=FALSE,encoding='UTF-8') else character()
+          lines <- lines[nzchar(trimws(lines))]
+          n <- length(lines)
+          max_n <- as.integer(Sys.getenv('MAX_LLM_CASES'))
+          if(is.na(max_n) || max_n < 0L) stop('max_llm_cases must be a non-negative integer')
+          rows <- if(n) lapply(lines,fromJSON,simplifyVector=FALSE) else list()
+          rule <- if(n) vapply(rows,function(z) {
+            x <- z$deterministic_evidence$classifier_rule
+            if(is.null(x)||!length(x)||!nzchar(as.character(x[[1L]]))) '<missing>' else as.character(x[[1L]])
+          },character(1)) else character()
+          manifest_path <- paste0(p,'.manifest.json')
+          if(!file.exists(manifest_path)) stop('Adjudication case manifest is missing',call.=FALSE)
+          manifest <- fromJSON(manifest_path,simplifyVector=FALSE)
+          manifest_cases <- as.integer(manifest$cases)
+          manifest_records <- as.integer(manifest$unique_bibliographic_records)
+          if(is.na(manifest_cases) || manifest_cases != n) {
+            stop(sprintf('Case manifest count mismatch: JSONL=%d manifest=%s',n,as.character(manifest$cases)),call.=FALSE)
+          }
+          if(is.na(manifest_records) || manifest_records < 0L) stop('Invalid unique_bibliographic_records in case manifest',call.=FALSE)
+          s <- list(
+            schema='living-evidence-map-workflow01-llm-preflight-v1',
+            cases=n,
+            max_llm_cases=max_n,
+            unique_bibliographic_records=manifest_records,
+            classifier_rule_counts=as.list(table(rule)),
+            status=if(n<=max_n)'within_budget_ceiling' else 'blocked_over_budget_ceiling'
+          )
+          writeLines(toJSON(s,auto_unbox=TRUE,pretty=TRUE,null='null'),
+                     'outputs/adjudication/preflight_summary.json')
+          cat(sprintf('LLM PREFLIGHT: cases=%d hard_ceiling=%d status=%s\n',n,max_n,s$status))
+          if(length(rule)) {
+            print(sort(table(rule),decreasing=TRUE))
+          }
+          if(n > max_n) {
+            stop(sprintf('LLM safety ceiling exceeded: %d cases > %d. No LLM requests have been sent.',n,max_n),call.=FALSE)
+          }
+
+      - name: Run LLM adjudication
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_DUPLICATE_MODEL: ${{ inputs.model }}
+          AUTO_THRESHOLD: ${{ inputs.auto_threshold }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          N="$(Rscript -e "cat(length(readLines('outputs/adjudication/cases.jsonl',warn=FALSE)))")"
+          mkdir -p outputs/adjudication/chunks
+          if [ "$N" -gt 0 ]; then
+            start=1
+            chunk=0
+            while [ "$start" -le "$N" ]; do
+              end=$((start+499))
+              if [ "$end" -gt "$N" ]; then end="$N"; fi
+              chunk=$((chunk+1))
+              out="outputs/adjudication/chunks/chunk-$(printf '%03d' "$chunk")"
+              mkdir -p "$out"
+              Rscript scripts/updater/workflow_01_llm_adjudicate_duplicates.R \
+                --input outputs/adjudication/cases.jsonl \
+                --output "$out/adjudications.jsonl" \
+                --human-review-output "$out/human_review.jsonl" \
+                --model "$OPENAI_DUPLICATE_MODEL" \
+                --auto-threshold "$AUTO_THRESHOLD" \
+                --start-row "$start" \
+                --end-row "$end"
+              start=$((end+1))
+            done
+          fi
+
+      - name: Merge and validate LLM adjudication state
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true }}
+        id: adjudication
+        env:
+          MODEL: ${{ inputs.model }}
+          AUTO_THRESHOLD: ${{ inputs.auto_threshold }}
+        shell: Rscript {0}
+        run: |
+          library(jsonlite)
+          library(digest)
+          lines <- readLines('outputs/adjudication/cases.jsonl',warn=FALSE)
+          lines <- lines[nzchar(trimws(lines))]
+          cases <- lapply(lines,fromJSON,simplifyVector=FALSE)
+          ids <- if(length(cases)) vapply(cases,function(z)z$review_case_id,character(1)) else character()
+          files <- list.files('outputs/adjudication/chunks',pattern='adjudications\\.jsonl$',recursive=TRUE,full.names=TRUE)
+          ml <- if(length(files)) unlist(lapply(files,readLines,warn=FALSE),use.names=FALSE) else character()
+          ml <- ml[nzchar(trimws(ml))]
+          model <- lapply(ml,fromJSON,simplifyVector=FALSE)
+          mids <- if(length(model)) vapply(model,function(z)z$review_case_id,character(1)) else character()
+          stopifnot(length(model)==length(cases),!anyDuplicated(mids),setequal(mids,ids))
+          if(length(model)) model <- model[match(ids,mids)]
+          technical <- sum(vapply(model,function(z)!is.null(z$technical_error),logical(1)))
+          if(technical>0L) stop(sprintf('%d technical LLM failures',technical))
+          human <- Filter(function(z)identical(z$promotion,'human_review'),model)
+          dir.create('outputs/adjudication/merged',recursive=TRUE,showWarnings=FALSE)
+          write_jsonl <- function(xs,p){
+            con<-file(p,'wt',encoding='UTF-8');on.exit(close(con),add=TRUE)
+            if(length(xs)) for(z in xs) writeLines(toJSON(z,auto_unbox=TRUE,null='null',na='null'),con,useBytes=TRUE)
+          }
+          write_jsonl(model,'outputs/adjudication/merged/all_adjudications.jsonl')
+          write_jsonl(human,'outputs/adjudication/merged/human_review.jsonl')
+          s <- list(
+            schema='living-evidence-map-workflow01-llm-adjudication-summary-v1',
+            status=if(length(human))'awaiting_human_review' else 'llm_adjudication_complete',
+            source_workflow01_run_id=Sys.getenv('GITHUB_RUN_ID'),
+            model=Sys.getenv('MODEL'),
+            auto_threshold=as.numeric(Sys.getenv('AUTO_THRESHOLD')),
+            total_cases=length(model),
+            automatic_duplicate=sum(vapply(model,function(z)identical(z$promotion,'duplicate'),logical(1))),
+            automatic_not_duplicate=sum(vapply(model,function(z)identical(z$promotion,'not_duplicate'),logical(1))),
+            human_review_required=length(human),
+            technical_failures=technical,
+            source_cases_sha256=digest(file='outputs/adjudication/cases.jsonl',algo='sha256',serialize=FALSE),
+            adjudications_sha256=digest(file='outputs/adjudication/merged/all_adjudications.jsonl',algo='sha256',serialize=FALSE)
+          )
+          writeLines(toJSON(s,auto_unbox=TRUE,pretty=TRUE,null='null'),'outputs/adjudication/merged/summary.json')
+          cat(sprintf('pending_count=%d\n',length(human)),file=Sys.getenv('GITHUB_OUTPUT'),append=TRUE)
+
+      - name: Build immutable human-review package
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_01_build_human_review_package.R \
+            --input outputs/adjudication/merged/human_review.jsonl \
+            --output-dir outputs/adjudication/human_review_package \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --review-id "${{ inputs.review_id }}" \
+            --review-sheet-id "${{ inputs.review_sheet_id }}"
+
+      - name: Build review-specific immutable pre-adjudication checkpoint
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count != '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_01_build_pending_checkpoint.R \
+            --first-run true \
+            --rescore-dir outputs/workflow01_incremental_rescore \
+            --previous-root previous_state \
+            --current-seed-root outputs/workflow01_union \
+            --incremental-rescore outputs/workflow01_incremental_assisted/final_incremental_decisions.csv \
+            --adjudications outputs/adjudication/merged/all_adjudications.jsonl \
+            --review-package outputs/adjudication/human_review_package \
+            --pre-summary outputs/workflow01_pre_adjudication/summary.json \
+            --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+            --previous-pointer "" \
+            --review-id "${{ inputs.review_id }}" \
+            --review-sheet-id "${{ inputs.review_sheet_id }}" \
+            --workflow00-pointer review_w01_handoff/w00_pointer.json \
+            --output-dir outputs/pending_checkpoint \
+            --run-id "$GITHUB_RUN_ID"
+
+      - name: Snapshot review-specific configuration inside pre-adjudication checkpoint
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count != '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Resume uses this immutable snapshot rather than repo-wide manual inputs.
+          Rscript scripts/updater/workflow_01_project_config_snapshot.R \
+            --mode snapshot --archive-dir outputs/pending_checkpoint
+
+      - name: Archive review-specific pre-adjudication checkpoint to restricted Zenodo
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count != '0' }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/checkpoint_zenodo
+          Rscript scripts/updater/workflow_01_archive_pending_checkpoint_to_zenodo.R \
+            --checkpoint-dir outputs/pending_checkpoint \
+            --run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output-dir outputs/checkpoint_zenodo
+
+      - name: Register review-specific checkpoint pointer before publishing Shiny queue
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count != '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          POINTER_DIR="docs/deduplication/reviews/${{ inputs.review_id }}/checkpoints"
+          mkdir -p "$POINTER_DIR"
+          cp outputs/checkpoint_zenodo/zenodo_receipt.json "$POINTER_DIR/run-$GITHUB_RUN_ID.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$POINTER_DIR/"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record review-specific W01 human-review checkpoint $GITHUB_RUN_ID"
+            pushed=false
+            for attempt in 1 2 3; do
+              git fetch origin "$WORKFLOW01_BRANCH"
+              if ! git rebase "origin/$WORKFLOW01_BRANCH"; then
+                git rebase --abort || true
+                echo "Checkpoint registration rebase failed" >&2
+                exit 1
+              fi
+              if git push origin "HEAD:$WORKFLOW01_BRANCH"; then pushed=true; break; fi
+            done
+            test "$pushed" = true
+          fi
+
+      - name: Upload Workflow 01 human-review package
+        id: upload_review
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count != '0' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow01-human-review-${{ github.run_id }}
+          path: outputs/adjudication/human_review_package/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Publish human-review queue to Shiny sidecar
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count != '0' }}
+        env:
+          LEM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
+          LEM_GOOGLE_SHEET_ID: ${{ inputs.review_sheet_id || secrets.LEM_TEST_GOOGLE_SHEET_ID }}
+          QUEUE_TAB: 'queue_w01_active'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON"
+          printf '%s' "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/lem-google-service-account.json"
+          chmod 600 "$RUNNER_TEMP/lem-google-service-account.json"
+          Rscript scripts/updater/workflow_01_publish_human_review_queue_to_shiny.R \
+            --queue outputs/adjudication/human_review_package/human_review_cases.jsonl \
+            --manifest outputs/adjudication/human_review_package/review_manifest.json \
+            --sheet-id "$LEM_GOOGLE_SHEET_ID" \
+            --tab "$QUEUE_TAB" \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --credential "$RUNNER_TEMP/lem-google-service-account.json"
+
+          BATCH_ID="w01-run-$GITHUB_RUN_ID"
+          QUEUE_SHA="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/adjudication/human_review_package/review_manifest.json");cat(as.character(x$queue_sha256))')"
+          Rscript scripts/updater/workflow_shiny_batch_status.R \
+            --stage "01" \
+            --batch-id "$BATCH_ID" \
+            --queue-sha256 "$QUEUE_SHA" \
+            --status published \
+            --sheet-id "$LEM_GOOGLE_SHEET_ID" \
+            --credential "$RUNNER_TEMP/lem-google-service-account.json" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --message "Workflow 01 duplicate adjudication paused for human review."
+
+
+      - name: Create empty human-review gate for automatic continuation
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/human_gate
+          : > outputs/human_gate/human_decisions.jsonl
+          : > outputs/human_gate/data_quality_repairs.jsonl
+          Rscript scripts/updater/workflow_01_migrate_human_review_state.R \
+            --queue outputs/adjudication/human_review_package/human_review_cases.jsonl \
+            --decisions outputs/human_gate/human_decisions.jsonl \
+            --repairs outputs/human_gate/data_quality_repairs.jsonl \
+            --output-dir outputs/human_gate/normalised
+          SHA="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/adjudication/human_review_package/review_manifest.json");cat(x$queue_sha256)')"
+          Rscript scripts/updater/workflow_01_validate_human_review_state.R \
+            --queue outputs/adjudication/human_review_package/human_review_cases.jsonl \
+            --decisions outputs/human_gate/normalised/human_decisions.normalised.jsonl \
+            --repairs outputs/human_gate/normalised/data_quality_repairs.normalised.jsonl \
+            --output outputs/human_gate/human_review_integrity.json \
+            --expected-queue-sha256 "$SHA" \
+            --require-complete true
+
+      - name: Apply final adjudications with stable work IDs
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/final
+          PREVIOUS_MAP_ARGS=(--previous-cluster-map previous_state/workflow01_full_five_source/manifestation_cluster_map.csv)
+          if [ "${{ inputs.first_run }}" = "true" ]; then PREVIOUS_MAP_ARGS=(); fi
+          Rscript scripts/updater/workflow_01_apply_adjudications_and_recluster.R \
+            "${PREVIOUS_MAP_ARGS[@]}" \
+            --combined-decisions outputs/workflow01_pre_adjudication/combined_pair_decisions.csv \
+            --manifestation-map outputs/workflow01_pre_adjudication/manifestation_cluster_map.csv \
+            --llm-adjudications outputs/adjudication/merged/all_adjudications.jsonl \
+            --human-decisions outputs/human_gate/normalised/human_decisions.normalised.jsonl \
+            --human-integrity-manifest outputs/human_gate/human_review_integrity.json \
+            --data-quality-repairs outputs/human_gate/normalised/data_quality_repairs.normalised.jsonl \
+            --precomputed-strip-actions outputs/workflow01_candidates/pathological_abstract_strip_actions.jsonl \
+            --output-dir outputs/final
+
+      - name: Preserve incremental metrics and cumulative repair provenance
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript -e "library(jsonlite);pre<-fromJSON('outputs/workflow01_pre_adjudication/summary.json',simplifyVector=FALSE);fin<-fromJSON('outputs/final/summary.json',simplifyVector=FALSE);for(nm in c('preserved_pair_decisions','incremental_candidate_rows','incremental_pair_decisions','exact_duplicate_candidate_rows_removed','manual_review_pairs'))if(is.null(fin[[nm]])&&!is.null(pre[[nm]]))fin[[nm]]<-pre[[nm]];writeLines(toJSON(fin,auto_unbox=TRUE,pretty=TRUE,null='null'),'outputs/final/summary.json')"
+          mv outputs/final/abstract_strip_actions.jsonl outputs/final/abstract_strip_actions.new.jsonl
+          PREV_REPAIRS="previous_state/provenance/cumulative_data_quality_repairs.jsonl"
+          if [ ! -f "$PREV_REPAIRS" ]; then : > "$PREV_REPAIRS"; fi
+          Rscript scripts/updater/workflow_01_merge_cumulative_repairs.R \
+            --previous-repairs "$PREV_REPAIRS" \
+            --new-repairs outputs/human_gate/normalised/data_quality_repairs.normalised.jsonl \
+            --previous-strips previous_state/workflow01_full_five_source/abstract_strip_actions.jsonl \
+            --new-strips outputs/final/abstract_strip_actions.new.jsonl \
+            --output-repairs outputs/final/cumulative_data_quality_repairs.jsonl \
+            --output-strips outputs/final/abstract_strip_actions.jsonl
+
+      - name: Build source-agnostic canonical JSONL
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/canonical
+          Rscript scripts/updater/workflow_01_build_canonical_jsonl.R \
+            --cluster-map outputs/final/manifestation_cluster_map.csv \
+            --strip-actions outputs/final/abstract_strip_actions.jsonl \
+            --data-quality-repairs outputs/final/cumulative_data_quality_repairs.jsonl \
+            --repair-audit outputs/canonical/data_quality_repair_application.jsonl \
+            --input-manifest outputs/workflow01_union/source_inputs.json \
+            --run-id "$GITHUB_RUN_ID" \
+            --output outputs/canonical/records.jsonl \
+            --manifest outputs/canonical/canonical_manifest.json
+
+      - name: Stage initial full W01 baseline
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="outputs/initial_baseline"
+          mkdir -p "$ROOT/workflow01_seed" "$ROOT/workflow01_incremental_rescore" "$ROOT/workflow01_full_five_source" "$ROOT/adjudication" "$ROOT/canonical" "$ROOT/reports" "$ROOT/provenance"
+          cp outputs/workflow01_union/*_records_for_deduplication.jsonl "$ROOT/workflow01_seed/"
+          cp outputs/workflow01_incremental_rescore/rescored_sample.csv outputs/workflow01_incremental_rescore/summary.json "$ROOT/workflow01_incremental_rescore/"
+          cp outputs/workflow01_union/source_inputs.json "$ROOT/workflow01_seed/"
+          cp outputs/final/summary.json outputs/final/final_pair_decisions.csv outputs/final/manifestation_cluster_map.csv "$ROOT/workflow01_full_five_source/"
+          cp outputs/final/abstract_strip_actions.jsonl "$ROOT/workflow01_full_five_source/"
+          cp outputs/adjudication/merged/all_adjudications.jsonl "$ROOT/adjudication/"
+          cp outputs/canonical/records.jsonl outputs/canonical/canonical_manifest.json "$ROOT/canonical/"
+          cp outputs/final/cumulative_data_quality_repairs.jsonl "$ROOT/provenance/"
+          test -s "$ROOT/canonical/records.jsonl"
+          test -s "$ROOT/workflow01_full_five_source/manifestation_cluster_map.csv"
+
+      - name: Archive initial full W01 baseline
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count == '0' }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/zenodo
+          Rscript scripts/updater/workflow_01_archive_state_to_zenodo.R \
+            --staging-root outputs/initial_baseline \
+            --run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --state final \
+            --review-id "${{ inputs.review_id }}" \
+            --review-sheet-id "${{ inputs.review_sheet_id }}" \
+            --execution-pathway "${{ inputs.execution_pathway }}" \
+            --output-dir outputs/zenodo
+
+
+      - name: Register review-specific canonical baseline and final run report
+        if: ${{ inputs.run_review_llm == true && inputs.review_id != '' && inputs.first_run == true && steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          POINTER_DIR="docs/deduplication/reviews/${{ inputs.review_id }}/zenodo"
+          REGISTRY="docs/deduplication/reviews/${{ inputs.review_id }}/zenodo_registry.csv"
+          Rscript scripts/updater/workflow_01_update_zenodo_registry.R \
+            --receipt outputs/zenodo/zenodo_receipt.json \
+            --registry "$REGISTRY" \
+            --pointer-dir "$POINTER_DIR"
+          mkdir -p "docs/deduplication/reviews/${{ inputs.review_id }}/runs"
+          Rscript scripts/updater/workflow_01_write_run_report.R \
+            --summary outputs/final/summary.json \
+            --canonical-manifest outputs/canonical/canonical_manifest.json \
+            --zenodo-receipt outputs/zenodo/zenodo_receipt.json \
+            --run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --out-md "docs/deduplication/reviews/${{ inputs.review_id }}/runs/run-$GITHUB_RUN_ID.md" \
+            --out-json "docs/deduplication/reviews/${{ inputs.review_id }}/runs/run-$GITHUB_RUN_ID.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "docs/deduplication/reviews/${{ inputs.review_id }}/"
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish review-specific W01 baseline $GITHUB_RUN_ID"
+            pushed=false
+            for attempt in 1 2 3; do
+              git fetch origin "$WORKFLOW01_BRANCH"
+              if ! git rebase "origin/$WORKFLOW01_BRANCH"; then
+                git rebase --abort || true
+                echo "Review baseline registration rebase failed" >&2
+                exit 1
+              fi
+              if git push origin "HEAD:$WORKFLOW01_BRANCH"; then pushed=true; break; fi
+            done
+            test "$pushed" = true
+          fi
+
+  workflow01:
+    if: ${{ inputs.review_id == '' && inputs.review_sheet_id == '' && inputs.execution_pathway != 'shiny' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Workflow 01 implementation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.WORKFLOW01_BRANCH }}
+          fetch-depth: 0
+
+      - name: Checkout Workflow 00 pointer registry
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.WORKFLOW00_REPORTING_BRANCH }}
+          path: workflow00_registry
+          persist-credentials: false
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - name: Install R dependencies
+        shell: Rscript {0}
+        run: install.packages(c('data.table','jsonlite','digest','httr2','readr','stringdist','stringi','xml2','googlesheets4'))
+
+      - name: Prevent ambiguous review-specific production routing
+        env:
+          LEM_EXECUTION_PATHWAY: ${{ inputs.execution_pathway }}
+          LEM_REVIEW_ID: ${{ inputs.review_id }}
+          LEM_REVIEW_SHEET_ID: ${{ inputs.review_sheet_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$LEM_REVIEW_ID" ] || [ -n "$LEM_REVIEW_SHEET_ID" ]; then
+            test -n "$LEM_REVIEW_ID" && test -n "$LEM_REVIEW_SHEET_ID" || {
+              echo "W01 requires both review_id and review_sheet_id" >&2
+              exit 1
+            }
+            echo "Review-specific W01 processing must use the validated review input catalogue and Sheet routing; not yet enabled." >&2
+            exit 1
+          fi
+
+      - name: Validate explicit first-run contract
+        env:
+          LEM_FIRST_RUN: ${{ inputs.first_run || false }}
+          LEM_PREVIOUS_POINTER: "${{ inputs.previous_workflow01_pointer_path }}"
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_validate_first_run.R \
+            --stage W01 \
+            --first-run "$LEM_FIRST_RUN" \
+            --previous-pointer "$LEM_PREVIOUS_POINTER"
+
+
+      - name: Validate input pointers and source subset
+        env:
+          W00_POINTER: ${{ inputs.workflow00_pointer_path }}
+          PREV_W01_POINTER: ${{ inputs.previous_workflow01_pointer_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "workflow00_registry/$W00_POINTER"
+          if [ "${{ inputs.first_run }}" != "true" ]; then
+            test -s "$PREV_W01_POINTER"
+            PREV_POINTER="$PREV_W01_POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("PREV_POINTER"));stopifnot(x$status=="published",x$state %in% c("final","delta"),x$visibility=="restricted")'
+          fi
+          POINTER="workflow00_registry/$W00_POINTER"
+          SCHEMA="$(POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE);cat(if(is.null(x$schema)) "" else x$schema)')"
+          if [ "$SCHEMA" = "living-evidence-map-workflow00-state-v1" ]; then
+            Rscript scripts/updater/workflow_00_validate_state.R --state "$POINTER"
+            SOURCES="$(POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE);s<-names(x$sources);stopifnot(length(s)>0L,all(grepl("^[a-z0-9][a-z0-9_-]*$",s)));cat(paste(s,collapse=","))')"
+          else
+            POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"));s<-as.character(unlist(x$sources));stopifnot(x$status=="published",x$visibility=="restricted",length(s)>0L,all(grepl("^[a-z0-9][a-z0-9_-]*$",s)),!anyDuplicated(s))'
+            SOURCES="$(POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"));cat(paste(as.character(unlist(x$sources)),collapse=","))')"
+          fi
+          echo "W00_SOURCES=$SOURCES" >> "$GITHUB_ENV"
+
+      - name: Restore latest Workflow 01 state from baseline plus deltas
+        if: ${{ inputs.first_run != true }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+          PREV_W01_POINTER: ${{ inputs.previous_workflow01_pointer_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_01_restore_current_state.R \
+            --pointer "$PREV_W01_POINTER" \
+            --pointer-dir docs/deduplication/zenodo \
+            --output-root previous_state
+          test -s previous_state/workflow01_full_five_source/final_pair_decisions.csv
+          test -s previous_state/workflow01_full_five_source/manifestation_cluster_map.csv
+          test -s previous_state/workflow01_full_five_source/summary.json
+          test -s previous_state/canonical/records.jsonl
+          seed_files=(previous_state/workflow01_seed/*_records_for_deduplication.jsonl)
+          [ -e "${seed_files[0]}" ] || { echo "No previous Workflow 01 seed files found" >&2; exit 1; }
+          for seed in "${seed_files[@]}"; do
+            test -s "$seed"
+          done
+
+      - name: Bind historical W01 decisions to archived source IDs
+        if: ${{ inputs.first_run != true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p previous_state/identity_bound
+          Rscript scripts/updater/workflow_01_bind_legacy_decisions_from_archive.R \
+            --decisions previous_state/workflow01_full_five_source/final_pair_decisions.csv \
+            --archived-manifestation-map previous_state/workflow01_full_five_source/manifestation_cluster_map.csv \
+            --output previous_state/identity_bound/final_pair_decisions.csv
+
+      - name: Initialise empty first-run W01 state
+        if: ${{ inputs.first_run == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p previous_state/workflow01_seed previous_state/workflow01_full_five_source previous_state/provenance previous_state/identity_bound
+          Rscript -e 'jsonlite::write_json(list(source_manifestations=0L), "previous_state/workflow01_full_five_source/summary.json",auto_unbox=TRUE)'
+          : > previous_state/provenance/cumulative_data_quality_repairs.jsonl
+          : > previous_state/workflow01_full_five_source/abstract_strip_actions.jsonl
+          : > previous_state/identity_bound/final_pair_decisions.csv
+          echo 'PASS: first-run state contains zero historical manifestations and decisions'
+
+      - name: Restore current Workflow 00 source subset
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          W00_POINTER: ${{ inputs.workflow00_pointer_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          POINTER="workflow00_registry/$W00_POINTER"
+          SCHEMA="$(POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE);cat(if(is.null(x$schema)) "" else x$schema)')"
+          rm -rf current_workflow00
+          mkdir -p current_workflow00
+          if [ "$SCHEMA" = "living-evidence-map-workflow00-state-v1" ]; then
+            Rscript scripts/updater/workflow_01_restore_workflow00_state.R               --state "$POINTER"               --output-root current_workflow00
+            echo "PASS: restored authoritative composite Workflow 00 state"
+            exit 0
+          fi
+          RUN_ID="$(POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"));cat(x$github_run_id)' 2>/dev/null || true)"
+          CACHE_OK=true
+          HAS_HASHES="$(POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE);cat(!is.null(x$handoff_sources))')"
+          if [ "$HAS_HASHES" != "TRUE" ] || [ -z "$RUN_ID" ]; then CACHE_OK=false; fi
+          if [ "$CACHE_OK" = true ]; then
+            IFS=',' read -ra SRC <<< "$W00_SOURCES"
+            for source in "${SRC[@]}"; do
+              mkdir -p "current_workflow00/$source"
+              if ! gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "workflow00-${source}-harvest-${RUN_ID}" --dir "current_workflow00/$source"; then
+                CACHE_OK=false; break
+              fi
+              EXPECTED="$(POINTER="$POINTER" SOURCE="$source" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE);cat(x$handoff_sources[[Sys.getenv("SOURCE")]]$tree_sha256)')"
+              ACTUAL="$(ROOT="current_workflow00/$source" Rscript -e 'library(digest);root<-Sys.getenv("ROOT");fs<-list.files(root,recursive=TRUE,full.names=TRUE,all.files=TRUE,no..=TRUE);fs<-fs[file.info(fs)$isdir %in% FALSE];rel<-substring(fs,nchar(normalizePath(root,mustWork=TRUE))+2L);o<-order(rel);fs<-fs[o];rel<-rel[o];z<-vapply(seq_along(fs),function(i)paste(rel[[i]],digest(file=fs[[i]],algo="sha256",serialize=FALSE),sep="\t"),character(1));cat(digest(paste(z,collapse="\n"),algo="sha256",serialize=FALSE))')"
+              if [ "$EXPECTED" != "$ACTUAL" ]; then CACHE_OK=false; break; fi
+            done
+          fi
+          if [ "$CACHE_OK" = true ]; then
+            echo "PASS: using verified 7-day Workflow 00 handoff artefacts"
+          else
+            rm -rf current_workflow00
+            Rscript scripts/updater/workflow_01_restore_workflow00_from_zenodo.R \
+              --pointer "$POINTER" \
+              --sources "$W00_SOURCES" \
+              --output-root current_workflow00
+            echo "PASS: restored authoritative Workflow 00 state from Zenodo"
+          fi
+
+      - name: Prepare updated and preserved API source inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          has_source(){ case ",$W00_SOURCES," in *",$1,"*) return 0;; *) return 1;; esac; }
+
+          delta_root() {
+            local source="$1"
+            local p="current_workflow00/$source/source_delta/filtered_source"
+            if [ -d "$p" ]; then printf '%s' "$p"; else printf ''; fi
+          }
+
+          delta_n() {
+            local source="$1"
+            local m="current_workflow00/$source/source_delta/reconciliation_manifest.json"
+            if [ -s "$m" ]; then
+              M="$m" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("M"));cat(as.integer(x$new_native_ids))'
+            else
+              printf ''
+            fi
+          }
+
+          find_handoff_jsonl() {
+            local root="$1"
+            local p=""
+            for candidate in "$root/records.jsonl" "$root/handoff/records.jsonl" "$root/source_child/records.jsonl"; do
+              if [ -f "$candidate" ]; then p="$candidate"; break; fi
+            done
+            if [ -z "$p" ]; then
+              p="$(find "$root" -type f -name 'records.jsonl' -print -quit 2>/dev/null || true)"
+            fi
+            printf '%s' "$p"
+          }
+
+          prepare_direct_source() {
+            local source="$1"
+            local out="current_sources/$source/records.jsonl"
+            mkdir -p "current_sources/$source"
+            local d n p
+            d="$(delta_root "$source")"
+            n="$(delta_n "$source")"
+            if [ -n "$d" ] && [ "$n" = "0" ]; then : > "$out"; return; fi
+            if [ -n "$d" ]; then p="$(find_handoff_jsonl "$d")"; else p="$(find_handoff_jsonl "current_workflow00/$source")"; fi
+            if [ -z "$p" ]; then
+              local code collection
+              case "$source" in
+                pubmed) code=MED; collection=pubmed ;;
+                ethos) code=ETH; collection=ethos ;;
+                cba) code=CBA; collection=cba ;;
+                epmc_preprints) code=PPR; collection=epmc_preprints ;;
+                *) echo "No normalized records.jsonl handoff found for API source $source" >&2; exit 1 ;;
+              esac
+              local raw_root="current_workflow00/$source"
+              if [ -n "$d" ]; then raw_root="$d"; fi
+              Rscript scripts/updater/workflow_01x_europe_pmc_sidecar_adapter.R \
+                --input-dir "$raw_root" \
+                --output-dir "current_sources/$source" \
+                --source-code "$code" \
+                --source-slug "$source" \
+                --source-collection "$collection"
+              p="current_sources/$source/${source}_sidecar_records.jsonl"
+              test -s "$p"
+            fi
+            if [ "$p" != "$out" ]; then mv "$p" "$out"; fi
+          }
+
+          # Existing five API sources retain their established, validated adapters.
+          for source in lens scopus openalex agricola wos; do
+            mkdir -p "current_sources/$source"
+            if has_source "$source"; then
+              D="$(delta_root "$source")"
+              N="$(delta_n "$source")"
+              case "$source" in
+                lens)
+                  if [ -n "$D" ]; then cp "$D/records.jsonl" current_sources/lens/records.jsonl; else P="$(find current_workflow00/lens -path '*/source_child/records.jsonl' -type f -print -quit)"; test -n "$P"; cp "$P" current_sources/lens/records.jsonl; fi
+                  ;;
+                scopus)
+                  if [ -n "$D" ] && [ "$N" = "0" ]; then : > current_sources/scopus/scopus_sidecar_records.jsonl; else if [ -n "$D" ]; then P="$D"; else P="$(find current_workflow00/scopus -type d -name source_child -print -quit)"; fi; test -n "$P"; Rscript scripts/updater/workflow_01s_scopus_sidecar_adapter.R --input-dir "$P" --output-dir current_sources/scopus; fi
+                  ;;
+                openalex)
+                  if [ -n "$D" ] && [ "$N" = "0" ]; then : > current_sources/openalex/openalex_sidecar_records.jsonl; else if [ -n "$D" ]; then P="$D"; else P="$(find current_workflow00/openalex -type d -name source_child -print -quit)"; fi; test -n "$P"; Rscript scripts/updater/workflow_01u_openalex_sidecar_adapter.R --input-dir "$P" --output-dir current_sources/openalex; fi
+                  ;;
+                agricola)
+                  if [ -n "$D" ] && [ "$N" = "0" ]; then : > current_sources/agricola/agricola_sidecar_records.jsonl; else if [ -n "$D" ]; then P="$D"; else P="$(find current_workflow00/agricola -type d -name source_child -print -quit)"; fi; test -n "$P"; Rscript scripts/updater/workflow_01v_agricola_sidecar_adapter.R --input-dir "$P" --output-dir current_sources/agricola; fi
+                  ;;
+                wos)
+                  if [ -n "$D" ] && [ "$N" = "0" ]; then : > current_sources/wos/wos_starter_sidecar_records.jsonl; else if [ -n "$D" ]; then P="$D"; else P="$(find current_workflow00/wos -type d -name source_child -print -quit)"; fi; test -n "$P"; Rscript scripts/updater/workflow_01w_wos_starter_sidecar_adapter.R --input-dir "$P" --output-dir current_sources/wos; fi
+                  ;;
+              esac
+            else
+              case "$source" in
+                lens) dest="records.jsonl" ;;
+                scopus) dest="scopus_sidecar_records.jsonl" ;;
+                openalex) dest="openalex_sidecar_records.jsonl" ;;
+                agricola) dest="agricola_sidecar_records.jsonl" ;;
+                wos) dest="wos_starter_sidecar_records.jsonl" ;;
+              esac
+              cp "previous_state/workflow01_seed/${source}_records_for_deduplication.jsonl" "current_sources/$source/$dest"
+            fi
+          done
+
+          # Additional API sources pass through generically when W00 emits normalized records.jsonl.
+          IFS=',' read -ra API_SOURCES <<< "$W00_SOURCES"
+          for source in "${API_SOURCES[@]}"; do
+            case "$source" in lens|scopus|openalex|agricola|wos) continue;; esac
+            prepare_direct_source "$source"
+          done
+      - name: Build runtime source catalogue and validate source inputs
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          MANUAL_OPTION=()
+          if [ -f user_input/workflow01_manual_sources.json ]; then
+            MANUAL_OPTION=(--manual-config user_input/workflow01_manual_sources.json)
+          fi
+          Rscript scripts/updater/workflow_01_build_runtime_catalogue.R \
+            --w00-sources "$W00_SOURCES" \
+            --w00-status docs/current_run/current_run_status.json \
+            --output outputs/workflow01_runtime_source_catalogue.json \
+            "${MANUAL_OPTION[@]}"
+          Rscript scripts/updater/workflow_01_prepare_source_catalogue.R \
+            --catalogue outputs/workflow01_runtime_source_catalogue.json \
+            --output-manifest outputs/workflow01_source_inputs.json
+
+      - name: Build provenance-safe prior-plus-new manifestation union
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRIOR_N="$(Rscript -e 'x<-jsonlite::fromJSON("previous_state/workflow01_full_five_source/summary.json");cat(x$source_manifestations)')"
+          FIRST_RUN_ARGS=()
+          if [ "${{ inputs.first_run }}" = "true" ]; then FIRST_RUN_ARGS=(--first-run true); fi
+          mkdir -p outputs/workflow01_union
+          Rscript scripts/updater/workflow_01_deduplication_build_union.R \
+            --old-dir previous_state/workflow01_seed \
+            "${FIRST_RUN_ARGS[@]}" \
+            --input-manifest outputs/workflow01_source_inputs.json \
+            --expected-prior-manifestations "$PRIOR_N" \
+            --output-dir outputs/workflow01_union
+
+      - name: Generate incremental duplicate candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow01_candidates
+          PRIOR_ARGS=(--old-manifestation-map previous_state/workflow01_full_five_source/manifestation_cluster_map.csv)
+          if [ "${{ inputs.first_run }}" = "true" ]; then PRIOR_ARGS=(--first-run true); fi
+          Rscript scripts/updater/workflow_01_deduplication_incremental_candidates.R \
+            --input-manifest outputs/workflow01_union/source_inputs.json \
+            "${PRIOR_ARGS[@]}" \
+            --output-dir outputs/workflow01_candidates \
+            --score-n 1 \
+            --workflow01-run-id "$GITHUB_RUN_ID"
+
+      - name: Build guarded identifier-assisted duplicate edges
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRIOR_N="$(Rscript -e 'x<-jsonlite::fromJSON("previous_state/workflow01_full_five_source/summary.json");cat(x$source_manifestations)')"
+          mkdir -p outputs/workflow01_identifier_assist
+          Rscript scripts/updater/workflow_01_identifier_assist_build.R \
+            --input-manifest outputs/workflow01_union/source_inputs.json \
+            --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+            --prior-manifestations "$PRIOR_N" \
+            --output-dir outputs/workflow01_identifier_assist
+
+      - name: Collapse scoring workload by safe identifier components
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow01_prescore
+          Rscript scripts/updater/workflow_01_identifier_prescore_collapse.R \
+            --candidates outputs/workflow01_candidates/all_candidate_pairs.csv \
+            --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+            --safe-edges outputs/workflow01_identifier_assist/safe_identifier_edges.csv \
+            --output-dir outputs/workflow01_prescore
+
+      - name: Score retained incremental candidate representatives
+        shell: bash
+        run: |
+          set -euo pipefail
+          N="$(Rscript -e "x<-data.table::fread('outputs/workflow01_prescore/all_candidate_pairs.csv');cat(max(2000L,nrow(x)))")"
+          mkdir -p outputs/workflow01_incremental_score
+          Rscript scripts/updater/workflow_01_deduplication_incremental_score.R \
+            --input-dir outputs/workflow01_prescore \
+            --upstream-dir outputs/workflow01_union \
+            --output-dir outputs/workflow01_incremental_score \
+            --target-n "$N" \
+            --sample-key "workflow01-production-$GITHUB_RUN_ID"
+
+      - name: Apply deterministic duplicate classifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREV_RUN=""
+          if [ "${{ inputs.first_run }}" != "true" ]; then
+            PREV_RUN="$(Rscript -e 'x<-jsonlite::fromJSON("previous_state/workflow01_current_state_restore_audit.json");cat(x$latest_github_run_id)')"
+          fi
+          mkdir -p outputs/workflow01_incremental_rescore
+          Rscript scripts/updater/workflow_01_deduplication_identifier_rescore.R \
+            --input-dir outputs/workflow01_incremental_score \
+            --output-dir outputs/workflow01_incremental_rescore \
+            --source-run-id "$PREV_RUN"
+
+      - name: Inject safe identifier duplicate edges
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow01_incremental_assisted
+          Rscript scripts/updater/workflow_01_identifier_inject_decisions.R \
+            --rescored outputs/workflow01_incremental_rescore/rescored_sample.csv \
+            --safe-edges outputs/workflow01_identifier_assist/safe_identifier_edges.csv \
+            --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+            --output outputs/workflow01_incremental_assisted/identifier_assisted_decisions.csv \
+            --audit outputs/workflow01_incremental_assisted/identifier_injection_summary.json
+
+      - name: Resolve conservative title-wrapper and attachment duplicates
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_01_title_assist_resolve.R \
+            --decisions outputs/workflow01_incremental_assisted/identifier_assisted_decisions.csv \
+            --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+            --output outputs/workflow01_incremental_assisted/final_incremental_decisions.csv \
+            --audit outputs/workflow01_incremental_assisted/title_assist_summary.json
+
+      - name: Merge previous and assisted incremental pair decisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow01_pre_adjudication
+          FIRST_RUN_ARGS=()
+          if [ "${{ inputs.first_run }}" = "true" ]; then FIRST_RUN_ARGS=(--first-run true); fi
+          Rscript scripts/updater/workflow_01_deduplication_merge_clusters.R \
+            "${FIRST_RUN_ARGS[@]}" \
+            --old-decisions previous_state/identity_bound/final_pair_decisions.csv \
+            --new-decisions outputs/workflow01_incremental_assisted/final_incremental_decisions.csv \
+            --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+            --output-dir outputs/workflow01_pre_adjudication
+
+      - name: Build LLM adjudication cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/adjudication
+          N="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow01_pre_adjudication/summary.json");cat(x$manual_review_pairs)')"
+          if [ "$N" -eq 0 ]; then
+            : > outputs/adjudication/cases.jsonl
+          else
+            Rscript scripts/updater/workflow_01_build_duplicate_adjudication_cases.R \
+              --review-pairs outputs/workflow01_pre_adjudication/manual_review_pairs.csv \
+              --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+              --union-dir outputs/workflow01_union \
+              --output outputs/adjudication/cases.jsonl
+          fi
+
+      - name: Preflight LLM adjudication budget
+        env:
+          MAX_LLM_CASES: ${{ inputs.max_llm_cases }}
+        shell: Rscript {0}
+        run: |
+          suppressPackageStartupMessages(library(jsonlite))
+          `%||%` <- function(x,y) if(is.null(x)) y else x
+          p <- 'outputs/adjudication/cases.jsonl'
+          lines <- if(file.exists(p)) readLines(p,warn=FALSE,encoding='UTF-8') else character()
+          lines <- lines[nzchar(trimws(lines))]
+          n <- length(lines)
+          max_n <- as.integer(Sys.getenv('MAX_LLM_CASES'))
+          if(is.na(max_n) || max_n < 0L) stop('max_llm_cases must be a non-negative integer')
+          rows <- if(n) lapply(lines,fromJSON,simplifyVector=FALSE) else list()
+          rule <- if(n) vapply(rows,function(z) {
+            x <- z$deterministic_evidence$classifier_rule
+            if(is.null(x)||!length(x)||!nzchar(as.character(x[[1L]]))) '<missing>' else as.character(x[[1L]])
+          },character(1)) else character()
+          manifest_path <- paste0(p,'.manifest.json')
+          if(!file.exists(manifest_path)) stop('Adjudication case manifest is missing',call.=FALSE)
+          manifest <- fromJSON(manifest_path,simplifyVector=FALSE)
+          manifest_cases <- as.integer(manifest$cases)
+          manifest_records <- as.integer(manifest$unique_bibliographic_records)
+          if(is.na(manifest_cases) || manifest_cases != n) {
+            stop(sprintf('Case manifest count mismatch: JSONL=%d manifest=%s',n,as.character(manifest$cases)),call.=FALSE)
+          }
+          if(is.na(manifest_records) || manifest_records < 0L) stop('Invalid unique_bibliographic_records in case manifest',call.=FALSE)
+          s <- list(
+            schema='living-evidence-map-workflow01-llm-preflight-v1',
+            cases=n,
+            max_llm_cases=max_n,
+            unique_bibliographic_records=manifest_records,
+            classifier_rule_counts=as.list(table(rule)),
+            status=if(n<=max_n)'within_budget_ceiling' else 'blocked_over_budget_ceiling'
+          )
+          writeLines(toJSON(s,auto_unbox=TRUE,pretty=TRUE,null='null'),
+                     'outputs/adjudication/preflight_summary.json')
+          cat(sprintf('LLM PREFLIGHT: cases=%d hard_ceiling=%d status=%s\n',n,max_n,s$status))
+          if(length(rule)) {
+            print(sort(table(rule),decreasing=TRUE))
+          }
+          if(n > max_n) {
+            stop(sprintf('LLM safety ceiling exceeded: %d cases > %d. No LLM requests have been sent.',n,max_n),call.=FALSE)
+          }
+
+      - name: Run LLM adjudication
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_DUPLICATE_MODEL: ${{ inputs.model }}
+          AUTO_THRESHOLD: ${{ inputs.auto_threshold }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          N="$(Rscript -e "cat(length(readLines('outputs/adjudication/cases.jsonl',warn=FALSE)))")"
+          mkdir -p outputs/adjudication/chunks
+          if [ "$N" -gt 0 ]; then
+            start=1
+            chunk=0
+            while [ "$start" -le "$N" ]; do
+              end=$((start+499))
+              if [ "$end" -gt "$N" ]; then end="$N"; fi
+              chunk=$((chunk+1))
+              out="outputs/adjudication/chunks/chunk-$(printf '%03d' "$chunk")"
+              mkdir -p "$out"
+              Rscript scripts/updater/workflow_01_llm_adjudicate_duplicates.R \
+                --input outputs/adjudication/cases.jsonl \
+                --output "$out/adjudications.jsonl" \
+                --human-review-output "$out/human_review.jsonl" \
+                --model "$OPENAI_DUPLICATE_MODEL" \
+                --auto-threshold "$AUTO_THRESHOLD" \
+                --start-row "$start" \
+                --end-row "$end"
+              start=$((end+1))
+            done
+          fi
+
+      - name: Merge and validate LLM adjudication state
+        id: adjudication
+        env:
+          MODEL: ${{ inputs.model }}
+          AUTO_THRESHOLD: ${{ inputs.auto_threshold }}
+        shell: Rscript {0}
+        run: |
+          library(jsonlite)
+          library(digest)
+          lines <- readLines('outputs/adjudication/cases.jsonl',warn=FALSE)
+          lines <- lines[nzchar(trimws(lines))]
+          cases <- lapply(lines,fromJSON,simplifyVector=FALSE)
+          ids <- if(length(cases)) vapply(cases,function(z)z$review_case_id,character(1)) else character()
+          files <- list.files('outputs/adjudication/chunks',pattern='adjudications\\.jsonl$',recursive=TRUE,full.names=TRUE)
+          ml <- if(length(files)) unlist(lapply(files,readLines,warn=FALSE),use.names=FALSE) else character()
+          ml <- ml[nzchar(trimws(ml))]
+          model <- lapply(ml,fromJSON,simplifyVector=FALSE)
+          mids <- if(length(model)) vapply(model,function(z)z$review_case_id,character(1)) else character()
+          stopifnot(length(model)==length(cases),!anyDuplicated(mids),setequal(mids,ids))
+          if(length(model)) model <- model[match(ids,mids)]
+          technical <- sum(vapply(model,function(z)!is.null(z$technical_error),logical(1)))
+          if(technical>0L) stop(sprintf('%d technical LLM failures',technical))
+          human <- Filter(function(z)identical(z$promotion,'human_review'),model)
+          dir.create('outputs/adjudication/merged',recursive=TRUE,showWarnings=FALSE)
+          write_jsonl <- function(xs,p){
+            con<-file(p,'wt',encoding='UTF-8');on.exit(close(con),add=TRUE)
+            if(length(xs)) for(z in xs) writeLines(toJSON(z,auto_unbox=TRUE,null='null',na='null'),con,useBytes=TRUE)
+          }
+          write_jsonl(model,'outputs/adjudication/merged/all_adjudications.jsonl')
+          write_jsonl(human,'outputs/adjudication/merged/human_review.jsonl')
+          s <- list(
+            schema='living-evidence-map-workflow01-llm-adjudication-summary-v1',
+            status=if(length(human))'awaiting_human_review' else 'llm_adjudication_complete',
+            source_workflow01_run_id=Sys.getenv('GITHUB_RUN_ID'),
+            model=Sys.getenv('MODEL'),
+            auto_threshold=as.numeric(Sys.getenv('AUTO_THRESHOLD')),
+            total_cases=length(model),
+            automatic_duplicate=sum(vapply(model,function(z)identical(z$promotion,'duplicate'),logical(1))),
+            automatic_not_duplicate=sum(vapply(model,function(z)identical(z$promotion,'not_duplicate'),logical(1))),
+            human_review_required=length(human),
+            technical_failures=technical,
+            source_cases_sha256=digest(file='outputs/adjudication/cases.jsonl',algo='sha256',serialize=FALSE),
+            adjudications_sha256=digest(file='outputs/adjudication/merged/all_adjudications.jsonl',algo='sha256',serialize=FALSE)
+          )
+          writeLines(toJSON(s,auto_unbox=TRUE,pretty=TRUE,null='null'),'outputs/adjudication/merged/summary.json')
+          cat(sprintf('pending_count=%d\n',length(human)),file=Sys.getenv('GITHUB_OUTPUT'),append=TRUE)
+
+      - name: Build immutable human-review package
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_01_build_human_review_package.R \
+            --input outputs/adjudication/merged/human_review.jsonl \
+            --output-dir outputs/adjudication/human_review_package \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --review-id "${{ inputs.review_id }}" \
+            --review-sheet-id "${{ inputs.review_sheet_id }}"
+
+      - name: Build compact human-review checkpoint
+        if: ${{ steps.adjudication.outputs.pending_count != '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          FIRST_RUN_ARGS=()
+          if [ "${{ inputs.first_run }}" = "true" ]; then FIRST_RUN_ARGS=(--first-run true); fi
+          if [ "${{ inputs.first_run }}" = "true" ]; then FIRST_RUN_ARGS+=(--rescore-dir outputs/workflow01_incremental_rescore); fi
+          Rscript scripts/updater/workflow_01_build_pending_checkpoint.R \
+            "${FIRST_RUN_ARGS[@]}" \
+            --previous-root previous_state \
+            --current-seed-root outputs/workflow01_union \
+            --incremental-rescore outputs/workflow01_incremental_assisted/final_incremental_decisions.csv \
+            --adjudications outputs/adjudication/merged/all_adjudications.jsonl \
+            --review-package outputs/adjudication/human_review_package \
+            --pre-summary outputs/workflow01_pre_adjudication/summary.json \
+            --metadata outputs/workflow01_candidates/normalised_metadata.csv \
+            --previous-pointer "${{ inputs.previous_workflow01_pointer_path }}" \
+            --workflow00-pointer "workflow00_registry/${{ inputs.workflow00_pointer_path }}" \
+            --output-dir outputs/pending_checkpoint \
+            --run-id "$GITHUB_RUN_ID"
+
+      - name: Snapshot project inputs in pending checkpoint
+        if: ${{ steps.adjudication.outputs.pending_count != '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_01_project_config_snapshot.R --mode snapshot --archive-dir outputs/pending_checkpoint
+
+      - name: Archive compact human-review checkpoint
+        if: ${{ steps.adjudication.outputs.pending_count != '0' }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/checkpoint_zenodo
+          Rscript scripts/updater/workflow_01_archive_pending_checkpoint_to_zenodo.R \
+            --checkpoint-dir outputs/pending_checkpoint \
+            --run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output-dir outputs/checkpoint_zenodo
+
+      - name: Register human-review checkpoint pointer
+        if: ${{ steps.adjudication.outputs.pending_count != '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          W01_CHECKPOINT_DIR="docs/deduplication/checkpoints"
+          if [ -n "${{ inputs.review_id }}" ]; then
+            W01_CHECKPOINT_DIR="docs/deduplication/reviews/${{ inputs.review_id }}/checkpoints"
+          fi
+          mkdir -p "$W01_CHECKPOINT_DIR"
+          cp outputs/checkpoint_zenodo/zenodo_receipt.json "$W01_CHECKPOINT_DIR/run-$GITHUB_RUN_ID.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$W01_CHECKPOINT_DIR/"
+          if ! git diff --cached --quiet; then
+            git commit -m "Record Workflow 01 human-review checkpoint $GITHUB_RUN_ID"
+            pushed=false
+            for attempt in 1 2 3; do
+              git fetch origin "$WORKFLOW01_BRANCH"
+              if ! git rebase "origin/$WORKFLOW01_BRANCH"; then
+                git rebase --abort || true
+                echo "ERROR: checkpoint registration rebase failed" >&2
+                exit 1
+              fi
+              if git push origin "HEAD:$WORKFLOW01_BRANCH"; then
+                pushed=true
+                break
+              fi
+              echo "Checkpoint push raced with another branch update; retrying ($attempt/3)." >&2
+            done
+            if [ "$pushed" != true ]; then
+              echo "ERROR: unable to register checkpoint after 3 rebased push attempts" >&2
+              exit 1
+            fi
+          fi
+          echo "Human review required; final Workflow 01 delta publication is intentionally paused."
+
+      - name: Upload Workflow 01 human-review package
+        id: upload_review
+        if: ${{ steps.adjudication.outputs.pending_count != '0' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow01-human-review-${{ github.run_id }}
+          path: outputs/adjudication/human_review_package/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Publish human-review queue to Shiny sidecar
+        if: ${{ steps.adjudication.outputs.pending_count != '0' }}
+        env:
+          LEM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
+          LEM_GOOGLE_SHEET_ID: ${{ inputs.review_sheet_id || secrets.LEM_TEST_GOOGLE_SHEET_ID }}
+          QUEUE_TAB: 'queue_w01_active'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON"
+          printf '%s' "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/lem-google-service-account.json"
+          chmod 600 "$RUNNER_TEMP/lem-google-service-account.json"
+          Rscript scripts/updater/workflow_01_publish_human_review_queue_to_shiny.R \
+            --queue outputs/adjudication/human_review_package/human_review_cases.jsonl \
+            --manifest outputs/adjudication/human_review_package/review_manifest.json \
+            --sheet-id "$LEM_GOOGLE_SHEET_ID" \
+            --tab "$QUEUE_TAB" \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --credential "$RUNNER_TEMP/lem-google-service-account.json"
+
+          BATCH_ID="w01-run-$GITHUB_RUN_ID"
+          QUEUE_SHA="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/adjudication/human_review_package/review_manifest.json");cat(as.character(x$queue_sha256))')"
+          Rscript scripts/updater/workflow_shiny_batch_status.R \
+            --stage "01" \
+            --batch-id "$BATCH_ID" \
+            --queue-sha256 "$QUEUE_SHA" \
+            --status published \
+            --sheet-id "$LEM_GOOGLE_SHEET_ID" \
+            --credential "$RUNNER_TEMP/lem-google-service-account.json" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --message "Workflow 01 duplicate adjudication paused for human review."
+
+      - name: Mark legacy Workflow 01 awaiting human review
+        if: ${{ steps.adjudication.outputs.pending_count != '0' && inputs.review_id == '' }}
+        env:
+          LEM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
+          LEM_GOOGLE_SHEET_ID: ${{ secrets.LEM_TEST_GOOGLE_SHEET_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_current_run_status_observer.R \
+            --force-stage W01 \
+            --stage-status waiting_human
+          printf '%s' "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/lem-google-service-account.json"
+          chmod 600 "$RUNNER_TEMP/lem-google-service-account.json"
+          Rscript scripts/updater/workflow_current_run_status_to_shiny.R \
+            --status docs/current_run/current_run_status.json \
+            --sheet-id "$LEM_GOOGLE_SHEET_ID" \
+            --credential "$RUNNER_TEMP/lem-google-service-account.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/current_run/current_run_status.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Mark W01 awaiting human review [skip ci]"
+            git pull --rebase origin "$WORKFLOW01_BRANCH"
+            git push origin HEAD:"$WORKFLOW01_BRANCH"
+          fi
+
+      - name: Build Workflow 01 review notification email
+        if: ${{ steps.adjudication.outputs.pending_count != '0' }}
+        env:
+          REVIEW_EMAIL: ${{ secrets.REVIEW_EMAIL }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_build_review_email_payload.R \
+            --workflow 01 \
+            --manifest outputs/adjudication/human_review_package/review_manifest.json \
+            --artifact-url '${{ steps.upload_review.outputs.artifact-url }}' \
+            --workflow-url '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}' \
+            --output outputs/adjudication/human_review_package/email_payload.json
+
+      - name: Email Workflow 01 review notification
+        if: ${{ steps.adjudication.outputs.pending_count != '0' }}
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_01_send_review_email.R \
+            --payload outputs/adjudication/human_review_package/email_payload.json
+      - name: Create empty human-review gate for automatic continuation
+        if: ${{ steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/human_gate
+          : > outputs/human_gate/human_decisions.jsonl
+          : > outputs/human_gate/data_quality_repairs.jsonl
+          Rscript scripts/updater/workflow_01_migrate_human_review_state.R \
+            --queue outputs/adjudication/human_review_package/human_review_cases.jsonl \
+            --decisions outputs/human_gate/human_decisions.jsonl \
+            --repairs outputs/human_gate/data_quality_repairs.jsonl \
+            --output-dir outputs/human_gate/normalised
+          SHA="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/adjudication/human_review_package/review_manifest.json");cat(x$queue_sha256)')"
+          Rscript scripts/updater/workflow_01_validate_human_review_state.R \
+            --queue outputs/adjudication/human_review_package/human_review_cases.jsonl \
+            --decisions outputs/human_gate/normalised/human_decisions.normalised.jsonl \
+            --repairs outputs/human_gate/normalised/data_quality_repairs.normalised.jsonl \
+            --output outputs/human_gate/human_review_integrity.json \
+            --expected-queue-sha256 "$SHA" \
+            --require-complete true
+
+      - name: Apply final adjudications with stable work IDs
+        if: ${{ steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/final
+          PREVIOUS_MAP_ARGS=(--previous-cluster-map previous_state/workflow01_full_five_source/manifestation_cluster_map.csv)
+          if [ "${{ inputs.first_run }}" = "true" ]; then PREVIOUS_MAP_ARGS=(); fi
+          Rscript scripts/updater/workflow_01_apply_adjudications_and_recluster.R \
+            "${PREVIOUS_MAP_ARGS[@]}" \
+            --combined-decisions outputs/workflow01_pre_adjudication/combined_pair_decisions.csv \
+            --manifestation-map outputs/workflow01_pre_adjudication/manifestation_cluster_map.csv \
+            --llm-adjudications outputs/adjudication/merged/all_adjudications.jsonl \
+            --human-decisions outputs/human_gate/normalised/human_decisions.normalised.jsonl \
+            --human-integrity-manifest outputs/human_gate/human_review_integrity.json \
+            --data-quality-repairs outputs/human_gate/normalised/data_quality_repairs.normalised.jsonl \
+            --precomputed-strip-actions outputs/workflow01_candidates/pathological_abstract_strip_actions.jsonl \
+            --output-dir outputs/final
+
+      - name: Preserve incremental metrics and cumulative repair provenance
+        if: ${{ steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript -e "library(jsonlite);pre<-fromJSON('outputs/workflow01_pre_adjudication/summary.json',simplifyVector=FALSE);fin<-fromJSON('outputs/final/summary.json',simplifyVector=FALSE);for(nm in c('preserved_pair_decisions','incremental_candidate_rows','incremental_pair_decisions','exact_duplicate_candidate_rows_removed','manual_review_pairs'))if(is.null(fin[[nm]])&&!is.null(pre[[nm]]))fin[[nm]]<-pre[[nm]];writeLines(toJSON(fin,auto_unbox=TRUE,pretty=TRUE,null='null'),'outputs/final/summary.json')"
+          mv outputs/final/abstract_strip_actions.jsonl outputs/final/abstract_strip_actions.new.jsonl
+          PREV_REPAIRS="previous_state/provenance/cumulative_data_quality_repairs.jsonl"
+          if [ ! -f "$PREV_REPAIRS" ]; then : > "$PREV_REPAIRS"; fi
+          Rscript scripts/updater/workflow_01_merge_cumulative_repairs.R \
+            --previous-repairs "$PREV_REPAIRS" \
+            --new-repairs outputs/human_gate/normalised/data_quality_repairs.normalised.jsonl \
+            --previous-strips previous_state/workflow01_full_five_source/abstract_strip_actions.jsonl \
+            --new-strips outputs/final/abstract_strip_actions.new.jsonl \
+            --output-repairs outputs/final/cumulative_data_quality_repairs.jsonl \
+            --output-strips outputs/final/abstract_strip_actions.jsonl
+
+      - name: Build source-agnostic canonical JSONL
+        if: ${{ steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/canonical
+          Rscript scripts/updater/workflow_01_build_canonical_jsonl.R \
+            --cluster-map outputs/final/manifestation_cluster_map.csv \
+            --strip-actions outputs/final/abstract_strip_actions.jsonl \
+            --data-quality-repairs outputs/final/cumulative_data_quality_repairs.jsonl \
+            --repair-audit outputs/canonical/data_quality_repair_application.jsonl \
+            --input-manifest outputs/workflow01_union/source_inputs.json \
+            --run-id "$GITHUB_RUN_ID" \
+            --output outputs/canonical/records.jsonl \
+            --manifest outputs/canonical/canonical_manifest.json
+
+      - name: Stage initial full W01 baseline
+        if: ${{ inputs.first_run == true && steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="outputs/initial_baseline"
+          mkdir -p "$ROOT/workflow01_seed" "$ROOT/workflow01_incremental_rescore" "$ROOT/workflow01_full_five_source" "$ROOT/adjudication" "$ROOT/canonical" "$ROOT/reports" "$ROOT/provenance"
+          cp outputs/workflow01_union/*_records_for_deduplication.jsonl "$ROOT/workflow01_seed/"
+          cp outputs/workflow01_incremental_rescore/rescored_sample.csv outputs/workflow01_incremental_rescore/summary.json "$ROOT/workflow01_incremental_rescore/"
+          cp outputs/workflow01_union/source_inputs.json "$ROOT/workflow01_seed/"
+          cp outputs/final/summary.json outputs/final/final_pair_decisions.csv outputs/final/manifestation_cluster_map.csv "$ROOT/workflow01_full_five_source/"
+          cp outputs/final/abstract_strip_actions.jsonl "$ROOT/workflow01_full_five_source/"
+          cp outputs/adjudication/merged/all_adjudications.jsonl "$ROOT/adjudication/"
+          cp outputs/canonical/records.jsonl outputs/canonical/canonical_manifest.json "$ROOT/canonical/"
+          cp outputs/final/cumulative_data_quality_repairs.jsonl "$ROOT/provenance/"
+          test -s "$ROOT/canonical/records.jsonl"
+          test -s "$ROOT/workflow01_full_five_source/manifestation_cluster_map.csv"
+
+      - name: Archive initial full W01 baseline
+        if: ${{ inputs.first_run == true && steps.adjudication.outputs.pending_count == '0' }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/zenodo
+          Rscript scripts/updater/workflow_01_archive_state_to_zenodo.R \
+            --staging-root outputs/initial_baseline \
+            --run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --state final \
+            --review-id "${{ inputs.review_id }}" \
+            --review-sheet-id "${{ inputs.review_sheet_id }}" \
+            --output-dir outputs/zenodo
+
+      - name: Validate final state and build delta
+        if: ${{ inputs.first_run != true && steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript -e 'library(jsonlite);m<-fromJSON("outputs/canonical/canonical_manifest.json");s<-fromJSON("outputs/final/summary.json");stopifnot(m$source_manifestations==s$source_manifestations,m$records==s$clusters,m$records>0L)'
+          Rscript scripts/updater/workflow_01_build_delta.R \
+            --previous-root previous_state \
+            --current-seed-root outputs/workflow01_union \
+            --current-final-root outputs/final \
+            --current-canonical outputs/canonical/records.jsonl \
+            --current-canonical-manifest outputs/canonical/canonical_manifest.json \
+            --previous-pointer "${{ inputs.previous_workflow01_pointer_path }}" \
+            --repair-audit outputs/canonical/data_quality_repair_application.jsonl \
+            --repair-ledger outputs/human_gate/normalised/data_quality_repairs.normalised.jsonl \
+            --output-dir outputs/delta \
+            --run-id "$GITHUB_RUN_ID"
+
+      - name: Replay delta and require exact reconstruction
+        if: ${{ inputs.first_run != true && steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_01_replay_delta.R \
+            --previous-root previous_state \
+            --delta-dir outputs/delta \
+            --output-root outputs/replayed
+
+      - name: Snapshot project inputs in validated delta
+        if: ${{ inputs.first_run != true && steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_01_project_config_snapshot.R --mode snapshot --archive-dir outputs/delta
+
+      - name: Archive only the validated delta to Zenodo
+        if: ${{ inputs.first_run != true && steps.adjudication.outputs.pending_count == '0' }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/zenodo
+          Rscript scripts/updater/workflow_01_archive_delta_to_zenodo.R \
+            --delta-dir outputs/delta \
+            --run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --review-id "${{ inputs.review_id }}" \
+            --review-sheet-id "${{ inputs.review_sheet_id }}" \
+            --output-dir outputs/zenodo
+
+      - name: Register delta and final run report
+        if: ${{ steps.adjudication.outputs.pending_count == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          W01_REGISTRY="docs/deduplication/zenodo_registry.csv"
+          W01_POINTER_DIR="docs/deduplication/zenodo"
+          if [ -n "${{ inputs.review_id }}" ]; then
+            W01_REGISTRY="docs/deduplication/reviews/${{ inputs.review_id }}/zenodo_registry.csv"
+            W01_POINTER_DIR="docs/deduplication/reviews/${{ inputs.review_id }}/zenodo"
+          fi
+          Rscript scripts/updater/workflow_01_update_zenodo_registry.R \
+            --receipt outputs/zenodo/zenodo_receipt.json \
+            --registry "$W01_REGISTRY" \
+            --pointer-dir "$W01_POINTER_DIR"
+          mkdir -p docs/deduplication/runs
+          Rscript scripts/updater/workflow_01_write_run_report.R \
+            --summary outputs/final/summary.json \
+            --canonical-manifest outputs/canonical/canonical_manifest.json \
+            --zenodo-receipt outputs/zenodo/zenodo_receipt.json \
+            --run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --out-md docs/deduplication/runs/run-$GITHUB_RUN_ID.md \
+            --out-json docs/deduplication/runs/run-$GITHUB_RUN_ID.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/deduplication/zenodo_registry.csv docs/deduplication/zenodo/ docs/deduplication/runs/
+          if ! git diff --cached --quiet; then
+            git commit -m "Record Workflow 01 delta run $GITHUB_RUN_ID"
+            git push origin "HEAD:$WORKFLOW01_BRANCH"
+          fi
+
+      - name: Update current-run live status through W01
+        if: ${{ steps.adjudication.outputs.pending_count == '0' }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+          LEM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
+          LEM_GOOGLE_SHEET_ID: ${{ secrets.LEM_TEST_GOOGLE_SHEET_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_current_run_status_observer.R \
+            --force-stage W01 \
+            --pointer "docs/deduplication/zenodo/run-$GITHUB_RUN_ID.json"
+          printf '%s' "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/lem-google-service-account.json"
+          chmod 600 "$RUNNER_TEMP/lem-google-service-account.json"
+          Rscript scripts/updater/workflow_current_run_status_to_shiny.R \
+            --status docs/current_run/current_run_status.json \
+            --sheet-id "$LEM_GOOGLE_SHEET_ID" \
+            --credential "$RUNNER_TEMP/lem-google-service-account.json"
+          Rscript scripts/reporting/write_workflow09_stage_summary.R --stage W01 --run-id "$GITHUB_RUN_ID"
+          Rscript scripts/reporting/write_workflow09_source_snapshot.R \
+            --stage W01 \
+            --run-id "$GITHUB_RUN_ID" \
+            --canonical outputs/canonical/records.jsonl
+          Rscript scripts/reporting/refresh_workflow09_input_manifest.R
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/current_run/current_run_status.json docs/reporting/workflow_09_inputs/current
+          if ! git diff --cached --quiet; then
+            git commit -m "Update current-run status through W01 [skip ci]"
+            git pull --rebase origin "$WORKFLOW01_BRANCH"
+            git push origin HEAD:"$WORKFLOW01_BRANCH"
+          fi
+
+      - name: Upload validated Workflow 01 handoff cache
+        if: ${{ steps.adjudication.outputs.pending_count == '0' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow01-handoff-${{ github.run_id }}
+          path: |
+            outputs/canonical/records.jsonl
+            outputs/canonical/canonical_manifest.json
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Trigger Workflow 02 after successful Workflow 01
+        if: ${{ inputs.first_run != true && inputs.review_id == '' && steps.adjudication.outputs.pending_count == '0' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS="docs/current_run/current_run_status.json"
+          W01_POINTER="docs/deduplication/zenodo/run-$GITHUB_RUN_ID.json"
+          test -s "$STATUS"
+          test -s "$W01_POINTER"
+          FIRST_RUN="${{ inputs.first_run || false }}"
+          PREV_W02=""
+          if [ "$FIRST_RUN" = "false" ]; then
+            PREV_W02="$(Rscript -e 'x<-jsonlite::fromJSON("docs/current_run/current_run_status.json",simplifyVector=FALSE);cat(as.character(x$baseline$workflow02_pointer))')"
+            test -n "$PREV_W02"
+            test -s "$PREV_W02"
+          fi
+          gh workflow run workflow_02_batched_production.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$WORKFLOW01_BRANCH" \
+            -f workflow01_pointer_path="$W01_POINTER" \
+            -f previous_workflow02_pointer_path="$PREV_W02" \
+            -f first_run="$FIRST_RUN"
+          echo "PASS: dispatched Workflow 02 from authoritative W01 run $GITHUB_RUN_ID"
+
+      - name: Upload short-lived audit state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow01-production-${{ github.run_id }}
+          path: |
+            outputs/workflow01_source_inputs.json
+            outputs/workflow01_union/source_inputs.json
+            outputs/workflow01_union/union_manifest.json
+            outputs/workflow01_candidates/incremental_summary.json
+            outputs/workflow01_candidates/normalised_metadata.csv
+            outputs/workflow01_candidates/pathological_repeated_abstract_groups.csv
+            outputs/workflow01_candidates/pathological_abstract_strip_actions.jsonl
+            outputs/workflow01_incremental_rescore/summary.json
+            outputs/workflow01_incremental_rescore/rescored_sample.csv
+            outputs/workflow01_identifier_assist/
+            outputs/workflow01_prescore/identifier_prescore_summary.json
+            outputs/workflow01_incremental_assisted/
+            outputs/workflow01_pre_adjudication/summary.json
+            outputs/workflow01_pre_adjudication/combined_pair_decisions.csv
+            outputs/workflow01_pre_adjudication/manifestation_cluster_map.csv
+            outputs/workflow01_pre_adjudication/manual_review_pairs.csv
+            outputs/adjudication/cases.jsonl
+            outputs/adjudication/cases.jsonl.manifest.json
+            outputs/adjudication/preflight_summary.json
+            outputs/adjudication/chunks/
+            outputs/adjudication/merged/
+            outputs/adjudication/human_review_package/
+            outputs/pending_checkpoint/
+            outputs/checkpoint_zenodo/
+            outputs/final/summary.json
+            outputs/final/cluster_id_aliases.csv
+            outputs/canonical/canonical_manifest.json
+            outputs/canonical/data_quality_repair_application.jsonl
+            outputs/delta/
+            outputs/replayed/workflow01_delta_replay_audit.json
+            outputs/zenodo/
+          retention-days: 90
+          if-no-files-found: warn

@@ -9,6 +9,11 @@ suppressPackageStartupMessages({
 
 `%||%` <- function(x,y) if(is.null(x)) y else x
 
+zenodo_config <- jsonlite::fromJSON("user_input/zenodo_config.json",simplifyVector=FALSE)
+zenodo_creators <- zenodo_config$creators
+zenodo_access_right <- as.character(zenodo_config$access_right)
+if(is.null(zenodo_creators)||!length(zenodo_creators)||any(!vapply(zenodo_creators,function(z)!is.null(z$name)&&length(z$name)==1L&&nzchar(trimws(as.character(z$name))),logical(1))))stop("Configure at least one Zenodo creator",call.=FALSE)
+if(length(zenodo_access_right)!=1L||!identical(zenodo_access_right,"restricted"))stop("W00-W08 archives require restricted Zenodo deposits",call.=FALSE)
 args <- commandArgs(trailingOnly=TRUE)
 arg <- function(flag,default=NULL){
   i <- match(flag,args)
@@ -20,6 +25,12 @@ arg <- function(flag,default=NULL){
 delta_dir <- normalizePath(arg("--delta-dir"),mustWork=TRUE)
 run_id <- arg("--run-id")
 repository <- arg("--repository")
+review_id <- arg("--review-id","")
+review_sheet_id <- arg("--review-sheet-id","")
+if(xor(nzchar(review_id),nzchar(review_sheet_id)))
+  stop("Delta archive requires both review ID and Google Sheet ID",call.=FALSE)
+if(!nzchar(review_id)) review_id <- NULL
+if(!nzchar(review_sheet_id)) review_sheet_id <- NULL
 output_dir <- arg("--output-dir")
 if(any(vapply(list(run_id,repository,output_dir),is.null,logical(1)))) {
   stop("Required: --delta-dir --run-id --repository --output-dir",call.=FALSE)
@@ -44,7 +55,7 @@ dir.create(archive_dir,recursive=TRUE,showWarnings=FALSE)
 all_paths <- list.files(delta_dir,recursive=TRUE,full.names=TRUE,all.files=TRUE,no..=TRUE)
 if(length(all_paths)) suppressWarnings(Sys.setFileTime(all_paths,as.POSIXct("2000-01-01",tz="UTC")))
 
-archive_name <- sprintf("agrifoodumbrellareview_workflow01_run-%s_delta.tar.gz",run_id)
+archive_name <- sprintf("LivingEvidenceMap_workflow01_run-%s_delta.tar.gz",run_id)
 archive_path <- file.path(archive_dir,archive_name)
 old <- setwd(dirname(delta_dir)); on.exit(setwd(old),add=TRUE)
 utils::tar(archive_path,files=basename(delta_dir),compression="gzip",tar="internal")
@@ -60,6 +71,8 @@ manifest <- list(
   github_run_id=as.character(run_id),
   github_run_url=run_url,
   repository=repository,
+  review_id=review_id,
+  google_sheet_id=review_sheet_id,
   previous=dm$previous,
   target=dm$target,
   delta=dm$delta,
@@ -70,7 +83,7 @@ manifest <- list(
     sha256=archive_sha
   ))
 )
-manifest_name <- sprintf("agrifoodumbrellareview_workflow01_run-%s_delta-manifest.json",run_id)
+manifest_name <- sprintf("LivingEvidenceMap_workflow01_run-%s_delta-manifest.json",run_id)
 manifest_path <- file.path(archive_dir,manifest_name)
 writeLines(toJSON(manifest,auto_unbox=TRUE,pretty=TRUE,null="null",na="null"),manifest_path,useBytes=TRUE)
 
@@ -102,14 +115,14 @@ metadata <- list(metadata=list(
   upload_type="dataset",
   publication_date=format(Sys.Date(),"%Y-%m-%d"),
   description=description,
-  creators=list(list(name="Haddaway, Neal")),
-  access_right="restricted",
+  creators=zenodo_creators,
+  access_right=zenodo_access_right,
   access_conditions=paste(
     "Files contain bibliographic metadata and derived deduplication state from database/API sources",
     "whose terms may limit redistribution. Access may be granted by the depositor where permitted."
   ),
   keywords=list("Living Evidence Map","evidence synthesis","deduplication","Workflow 01","incremental delta",
-                paste0("agrifoodumbrellareview-workflow01-run-",run_id)),
+                paste0("LivingEvidenceMap-workflow01-run-",run_id)),
   notes=paste0(
     "Previous Workflow 01 Zenodo record: ",dm$previous$zenodo_record_id,
     ". Target manifestations: ",dm$target$source_manifestations,
@@ -168,6 +181,8 @@ receipt <- list(
   state="delta",
   github_run_id=as.character(run_id),
   github_run_url=run_url,
+  review_id=review_id,
+  google_sheet_id=review_sheet_id,
   source_manifestations=as.integer(dm$target$source_manifestations),
   preserved_pair_decisions=as.integer(summary$preserved_pair_decisions %||% NA),
   incremental_pair_decisions=as.integer(summary$incremental_pair_decisions %||% NA),

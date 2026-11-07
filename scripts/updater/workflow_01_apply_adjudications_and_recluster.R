@@ -22,7 +22,6 @@ integrity_path <- arg("--human-integrity-manifest",NULL)
 data_quality_repairs_path <- arg("--data-quality-repairs",NULL)
 precomputed_strip_actions_path <- arg("--precomputed-strip-actions",NULL)
 previous_cluster_map_path <- arg("--previous-cluster-map",NULL)
-explicit_splits_path <- arg("--explicit-cluster-splits",NULL)
 output_dir <- arg("--output-dir")
 if (any(vapply(list(combined_path,manifestation_map_path,llm_path,human_path,integrity_path,output_dir),is.null,logical(1)))) {
   stop("Required: --combined-decisions --manifestation-map --llm-adjudications --human-decisions --human-integrity-manifest --output-dir",call.=FALSE)
@@ -37,6 +36,30 @@ if (anyDuplicated(pairs$pair_key)) stop("Combined pair decisions contain duplica
 setkey(pairs,pair_key)
 setorder(meta,idx)
 if (!identical(meta$idx,seq_len(nrow(meta)))) stop("Manifestation map idx is not contiguous",call.=FALSE)
+# Check that the stored stable key resolves to the same source records as
+# the current computational indices. Never trust a numeric pair key.
+identity<-function(src,id)paste0(nchar(src,type="bytes"),":",src,nchar(id,type="bytes"),":",id)
+if(nrow(pairs)) {
+  if(!all(c("source_id_i","source_record_id_i","source_id_j","source_record_id_j") %in% names(pairs)))
+    stop("Final W01 decisions lack explicit source identities",call.=FALSE)
+  i<-as.integer(pairs$record_i);j<-as.integer(pairs$record_j)
+  if(anyNA(i)||anyNA(j)||any(i<1L|i>nrow(meta)|j<1L|j>nrow(meta)|i==j))
+    stop("Final W01 decision indices are invalid",call.=FALSE)
+  match_ids<-pairs$source_id_i==meta$source[i] &
+    pairs$source_record_id_i==meta$source_record_id[i] &
+    pairs$source_id_j==meta$source[j] &
+    pairs$source_record_id_j==meta$source_record_id[j]
+  if(anyNA(match_ids)||!all(match_ids))stop("Final W01 decision identity mismatch",call.=FALSE)
+  a<-identity(as.character(meta$source[i]),as.character(meta$source_record_id[i]))
+  b<-identity(as.character(meta$source[j]),as.character(meta$source_record_id[j]))
+  lo<-ifelse(a<=b,a,b);hi<-ifelse(a<=b,b,a)
+  keys<-vapply(seq_along(lo),function(k)
+    digest(paste0(nchar(lo[[k]],type="bytes"),":",lo[[k]],hi[[k]]),
+      algo="sha256",serialize=FALSE),character(1))
+  if(!identical(as.character(pairs$pair_key),keys))
+    stop("Final W01 persisted pair keys do not match source IDs",call.=FALSE)
+}
+
 
 read_jsonl <- function(path) {
   x <- readLines(path,warn=FALSE,encoding="UTF-8")
@@ -185,99 +208,7 @@ for (i in seq_along(llm)) {
   )
 }
 
-# Apply explicit, immutable source-identity split corrections before clustering.
-# These corrections are narrowly scoped to known historical false merges. They
-# prevent cross-group duplicate edges from re-forming those clusters and also
-# provide deterministic target work IDs for the authorised split components.
-explicit_split_cfg <- NULL
-explicit_split_ids <- character()
-explicit_key_group <- character()
-explicit_key_target <- character()
-explicit_key_correction <- character()
-explicit_split_audit <- list()
-if(!is.null(explicit_splits_path)){
-  if(!file.exists(explicit_splits_path)) stop("Explicit cluster split registry not found",call.=FALSE)
-  explicit_split_cfg <- fromJSON(explicit_splits_path,simplifyVector=FALSE)
-  if(!identical(explicit_split_cfg$schema,"living-evidence-map-workflow01-explicit-cluster-splits-v1")) {
-    stop("Unsupported explicit cluster split schema",call.=FALSE)
-  }
-  corrections <- explicit_split_cfg$corrections
-  if(!length(corrections)) stop("Explicit cluster split registry contains no corrections",call.=FALSE)
-  explicit_split_ids <- vapply(corrections,function(x)as.character(x$previous_cluster_id),character(1))
-  if(anyDuplicated(explicit_split_ids)) stop("Explicit split registry repeats previous_cluster_id",call.=FALSE)
-
-  meta_keys <- paste(meta$source,meta$source_record_id,sep="::")
-  meta_key_to_idx <- setNames(meta$idx,meta_keys)
-  all_declared_keys <- character()
-
-  for(corr in corrections){
-    old_id <- as.character(corr$previous_cluster_id)
-    groups_cfg <- corr$groups
-    group_names <- vapply(groups_cfg,function(g)as.character(g$group),character(1))
-    if(length(groups_cfg)<2L || anyDuplicated(group_names)) stop(sprintf("Invalid explicit groups for %s",old_id),call.=FALSE)
-    preserve_group <- as.character(corr$preserve_group)
-    if(!(preserve_group %in% group_names)) stop(sprintf("Invalid preserve_group for %s",old_id),call.=FALSE)
-
-    group_keys <- list()
-    target_ids <- character()
-    for(g in groups_cfg){
-      gname <- as.character(g$group)
-      keys <- vapply(g$members,function(m)paste(as.character(m$source),as.character(m$source_record_id),sep="::"),character(1))
-      if(!length(keys) || anyDuplicated(keys)) stop(sprintf("Invalid members for %s/%s",old_id,gname),call.=FALSE)
-      missing_keys <- setdiff(keys,meta_keys)
-      if(length(missing_keys)) stop(sprintf("Explicit split %s/%s is missing declared manifestation(s): %s",old_id,gname,paste(missing_keys,collapse=",")),call.=FALSE)
-      if(length(intersect(all_declared_keys,keys))) stop("A manifestation occurs in more than one explicit split correction",call.=FALSE)
-      all_declared_keys <- c(all_declared_keys,keys)
-      group_keys[[gname]] <- keys
-      if(gname==preserve_group){
-        target_ids[[gname]] <- old_id
-      } else {
-        digest_keys <- sub("::",":",sort(keys),fixed=TRUE)
-        target_ids[[gname]] <- paste0("work-",substr(digest(paste(digest_keys,collapse="|"),algo="sha256",serialize=FALSE),1,16))
-      }
-      for(key in keys){
-        explicit_key_group[[key]] <- paste(old_id,gname,sep="::")
-        explicit_key_target[[key]] <- target_ids[[gname]]
-        explicit_key_correction[[key]] <- old_id
-      }
-    }
-
-    declared_idx <- unname(meta_key_to_idx[unlist(group_keys,use.names=FALSE)])
-    rows <- which(pairs$record_i %in% declared_idx & pairs$record_j %in% declared_idx)
-    overridden <- 0L
-    if(length(rows)){
-      key_i <- meta_keys[pairs$record_i[rows]]
-      key_j <- meta_keys[pairs$record_j[rows]]
-      gi <- unname(explicit_key_group[key_i])
-      gj <- unname(explicit_key_group[key_j])
-      cross <- rows[!is.na(gi) & !is.na(gj) & gi!=gj]
-      if(length(cross)){
-        overridden <- length(cross)
-        pairs[cross,`:=`(
-          rescored_classification="not_duplicate",
-          rescored_rule="workflow01_explicit_cluster_split",
-          review_route="resolved_explicit_correction"
-        )]
-      }
-    }
-    explicit_split_audit[[length(explicit_split_audit)+1L]] <- list(
-      previous_cluster_id=old_id,
-      reason=as.character(corr$reason),
-      preserve_group=preserve_group,
-      group_count=length(groups_cfg),
-      declared_manifestations=length(unlist(group_keys,use.names=FALSE)),
-      cross_group_pair_rows_overridden=overridden,
-      target_cluster_ids=as.list(target_ids)
-    )
-  }
-}
-
 fwrite(pairs,file.path(output_dir,"final_pair_decisions.csv"))
-if(length(explicit_split_audit)){
-  con_split <- file(file.path(output_dir,"explicit_cluster_split_audit.jsonl"),"wt",encoding="UTF-8")
-  for(z in explicit_split_audit) writeLines(toJSON(z,auto_unbox=TRUE,null="null",na="null"),con_split,useBytes=TRUE)
-  close(con_split)
-}
 audit_con <- file(file.path(output_dir,"adjudication_application_audit.jsonl"),"wt",encoding="UTF-8")
 for (z in audit) writeLines(toJSON(z,auto_unbox=TRUE,null="null",na="null"),audit_con,useBytes=TRUE)
 close(audit_con)
@@ -332,24 +263,7 @@ if(!is.null(previous_cluster_map_path)){
   }
   previous_root_counts <- previous[,.(current_root_count=uniqueN(current_root)),by=cluster_id]
   split_ids_pre <- previous_root_counts[current_root_count>1L,cluster_id]
-  unauthorised_split_ids <- setdiff(split_ids_pre,explicit_split_ids)
-  if(length(unauthorised_split_ids)){
-    stop(sprintf(
-      "%d previous work IDs would split across multiple current clusters without an explicit correction: %s",
-      length(unauthorised_split_ids),paste(unauthorised_split_ids,collapse=",")
-    ),call.=FALSE)
-  }
-  if(length(intersect(split_ids_pre,explicit_split_ids))){
-    authorised <- intersect(split_ids_pre,explicit_split_ids)
-    for(old_id in authorised){
-      prev_keys <- previous[cluster_id==old_id,key]
-      declared <- names(explicit_key_correction)[explicit_key_correction==old_id]
-      if(!setequal(prev_keys,declared)){
-        stop(sprintf("Authorised split %s no longer matches the exact historical cluster membership",old_id),call.=FALSE)
-      }
-    }
-  }
-
+  if(length(split_ids_pre)) stop(sprintf("%d previous work IDs would split across multiple current clusters; refusing to reassign stable IDs: %s",length(split_ids_pre),paste(split_ids_pre,collapse=",")),call.=FALSE)
   if("idx" %in% names(previous)){
     previous_cluster_first_idx <- previous[,.(first_idx=min(idx)),by=cluster_id]
   } else {
@@ -369,45 +283,9 @@ for(g in groups) {
   prior_ids <- if(length(previous_key_to_cluster)) unique(unname(previous_key_to_cluster[keys_lookup])) else character()
   prior_ids <- prior_ids[!is.na(prior_ids) & nzchar(prior_ids)]
 
-  # A component containing manifestations from an explicit split may belong to
-  # only one declared correction group. If a future record bridges two groups,
-  # fail closed for review rather than silently re-merging the known false split.
-  declared_group_labels <- unique(unname(explicit_key_group[keys_lookup]))
-  declared_group_labels <- declared_group_labels[!is.na(declared_group_labels) & nzchar(declared_group_labels)]
-  if(length(declared_group_labels)>1L){
-    stop(sprintf(
-      "Current duplicate component bridges explicitly separated W01 groups: %s",
-      paste(declared_group_labels,collapse=",")
-    ),call.=FALSE)
-  }
-  explicit_target <- NULL
-  if(length(declared_group_labels)==1L){
-    declared_keys_in_group <- keys_lookup[keys_lookup %in% names(explicit_key_group)]
-    targets <- unique(unname(explicit_key_target[declared_keys_in_group]))
-    targets <- targets[!is.na(targets) & nzchar(targets)]
-    if(length(targets)!=1L) stop("Could not resolve one deterministic target ID for explicit split component",call.=FALSE)
-    explicit_target <- targets[[1L]]
-  }
-
   id_origin <- "new"
   retired_ids <- character()
-  if(!is.null(explicit_target)){
-    cid <- explicit_target
-    if(cid %in% prior_ids){
-      id_origin <- "preserved"
-      retired_ids <- setdiff(prior_ids,cid)
-    } else if(length(prior_ids)==1L && prior_ids[[1L]] %in% explicit_split_ids){
-      # First authorised split from the historical false-merged work.
-      id_origin <- if(cid %in% explicit_split_ids) "preserved" else "explicit_split"
-    } else if(length(prior_ids)==0L){
-      id_origin <- "explicit_split"
-    } else {
-      stop(sprintf(
-        "Explicit split component target %s conflicts with prior work ID(s): %s",
-        cid,paste(prior_ids,collapse=",")
-      ),call.=FALSE)
-    }
-  } else if(length(prior_ids)==0L){
+  if(length(prior_ids)==0L){
     cid <- paste0("work-",substr(digest(paste(sort(keys_colon),collapse="|"),algo="sha256",serialize=FALSE),1,16))
   } else if(length(prior_ids)==1L){
     cid <- prior_ids[[1L]]
@@ -479,10 +357,7 @@ summary <- list(
   previous_cluster_map_supplied=!is.null(previous_cluster_map_path),
   preserved_work_ids=if(is.null(previous)) 0L else sum(unique(map[,.(cluster_id,cluster_id_origin)])$cluster_id_origin=="preserved"),
   merged_existing_work_ids=nrow(aliases),
-  new_work_ids=sum(unique(map[,.(cluster_id,cluster_id_origin)])$cluster_id_origin %in% c("new","explicit_split")),
-  explicit_cluster_split_corrections=length(explicit_split_audit),
-  explicit_cluster_split_registry=if(is.null(explicit_splits_path)) NULL else basename(explicit_splits_path),
-  explicit_cluster_split_audit_file=if(length(explicit_split_audit)) "explicit_cluster_split_audit.jsonl" else NULL,
+  new_work_ids=sum(unique(map[,.(cluster_id,cluster_id_origin)])$cluster_id_origin %in% "new"),
   cluster_id_aliases_file="cluster_id_aliases.csv"
 )
 if (nrow(remaining)) {

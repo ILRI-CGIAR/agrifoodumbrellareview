@@ -1,0 +1,74 @@
+name: Workflow 01 - Export deduplicated RIS
+run-name: RIS ${{ inputs.review_id }} ${{ inputs.source_run_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      review_id:
+        required: true
+        type: string
+      source_run_id:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install required R packages
+        shell: Rscript {0}
+        run: |
+          required <- c("jsonlite","digest","httr2")
+          missing <- setdiff(required,rownames(installed.packages()))
+          if(length(missing)) install.packages(missing)
+          if(any(!vapply(required,requireNamespace,logical(1),quietly=TRUE))) stop("RIS dependencies missing")
+      - name: Validate final review pointer and restore canonical corpus
+        env:
+          REVIEW_ID: ${{ inputs.review_id }}
+          SOURCE_RUN: ${{ inputs.source_run_id }}
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$REVIEW_ID" =~ ^[A-Za-z0-9._-]{3,128}$ ]]
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          test -n "$ZENODO_ACCESS_TOKEN"
+          POINTER_DIR="docs/deduplication/reviews/$REVIEW_ID/zenodo"
+          POINTER="$POINTER_DIR/run-$SOURCE_RUN.json"
+          test -s "$POINTER"
+          REVIEW_ID="$REVIEW_ID" SOURCE_RUN="$SOURCE_RUN" POINTER="$POINTER" Rscript - <<'RS'
+          library(jsonlite)
+          p <- fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE)
+          stopifnot(identical(p$status,"published"),p$state %in% c("final","delta"),
+                    identical(p$visibility,"restricted"),
+                    identical(as.character(p$review_id),Sys.getenv("REVIEW_ID")),
+                    identical(as.character(p$github_run_id),Sys.getenv("SOURCE_RUN")),
+                    nzchar(as.character(p$google_sheet_id)))
+          RS
+          Rscript scripts/updater/workflow_01_restore_current_state.R \
+            --pointer "$POINTER" --pointer-dir "$POINTER_DIR" --output-root outputs/ris_restored
+          test -s outputs/ris_restored/canonical/records.jsonl
+          test -s outputs/ris_restored/canonical/canonical_manifest.json
+      - name: Convert final unique canonical records to RIS
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/ris
+          Rscript scripts/updater/workflow_01_canonical_to_ris.R \
+            --input outputs/ris_restored/canonical/records.jsonl \
+            --manifest outputs/ris_restored/canonical/canonical_manifest.json \
+            --output outputs/ris/unique_records.ris
+          test -s outputs/ris/unique_records.ris
+      - name: Upload temporary authenticated RIS download artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow01-unique-ris-${{ inputs.review_id }}-${{ inputs.source_run_id }}
+          path: outputs/ris/unique_records.ris
+          retention-days: 90
+          if-no-files-found: error

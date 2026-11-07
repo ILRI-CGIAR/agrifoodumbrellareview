@@ -12,6 +12,7 @@ arg <- function(flag,default=NULL) {
   if (i==length(args)) stop(sprintf("Missing value after %s",flag),call.=FALSE)
   args[[i+1L]]
 }
+first_run <- identical(tolower(arg("--first-run","false")),"true")
 old_decisions <- arg("--old-decisions")
 new_decisions <- arg("--new-decisions")
 metadata <- arg("--metadata")
@@ -21,13 +22,49 @@ if (any(vapply(list(old_decisions,new_decisions,metadata,output_dir),is.null,log
 }
 dir.create(output_dir,recursive=TRUE,showWarnings=FALSE)
 
-old <- fread(old_decisions,na.strings=c("","NA"))
 new <- fread(new_decisions,na.strings=c("","NA"))
+old <- if (first_run) copy(new[0]) else fread(old_decisions,na.strings=c("","NA"))
 meta <- fread(metadata,na.strings=c("","NA"))
+if (first_run && file.exists(old_decisions) && isTRUE(file.info(old_decisions)$size > 0L)) stop("First run must not supply historical decisions",call.=FALSE)
 stopifnot(all(c("idx","source","source_record_id") %in% names(meta)))
 stopifnot(identical(meta$idx,seq_len(nrow(meta))))
 
-pair_key <- function(x) paste(pmin(x$record_i,x$record_j),pmax(x$record_i,x$record_j),sep="::")
+# Verify persisted identities before accepting positional candidate coordinates.
+# Rows may be reordered between a paused classification and its resumption.
+verify_pair_ids <- function(x,label) {
+  fields <- c("source_id_i","source_record_id_i","source_id_j","source_record_id_j")
+  present <- fields %in% names(x)
+  if(!nrow(x)) return(invisible(TRUE))
+  if(!any(present)) stop(label,": persisted decisions lack immutable source IDs",call.=FALSE)
+  if(!all(present)) stop(label,": partial immutable identity columns",call.=FALSE)
+  i<-as.integer(x$record_i); j<-as.integer(x$record_j)
+  if(anyNA(i)||anyNA(j)||any(i<1L|i>nrow(meta)|j<1L|j>nrow(meta)|i==j))
+    stop(label,": invalid positional coordinates",call.=FALSE)
+  valid <- as.character(x$source_id_i)==as.character(meta$source[i]) &
+    as.character(x$source_record_id_i)==as.character(meta$source_record_id[i]) &
+    as.character(x$source_id_j)==as.character(meta$source[j]) &
+    as.character(x$source_record_id_j)==as.character(meta$source_record_id[j])
+  if(anyNA(valid)||!all(valid))
+    stop(label,": immutable source identity mismatch; refusing positional decision assignment",call.=FALSE)
+  invisible(TRUE)
+}
+verify_pair_ids(old,"Preserved decisions")
+verify_pair_ids(new,"New decisions")
+# A persisted pair key is based on the immutable source namespace and source ID.
+# Numeric indices are used only to address the current in-memory metadata.
+pair_key <- function(x) {
+  if(!nrow(x)) return(character())
+  i<-as.integer(x$record_i);j<-as.integer(x$record_j)
+  if(anyNA(i)||anyNA(j)||any(i<1L|i>nrow(meta)|j<1L|j>nrow(meta)|i==j))
+    stop("Invalid positional pair coordinates",call.=FALSE)
+  identity<-function(src,id)paste0(nchar(src,type="bytes"),":",src,nchar(id,type="bytes"),":",id)
+  a<-identity(as.character(meta$source[i]),as.character(meta$source_record_id[i]))
+  b<-identity(as.character(meta$source[j]),as.character(meta$source_record_id[j]))
+  low<-ifelse(a<=b,a,b);high<-ifelse(a<=b,b,a)
+  vapply(seq_along(low),function(k)
+    digest(paste0(nchar(low[[k]],type="bytes"),":",low[[k]],high[[k]]),
+      algo="sha256",serialize=FALSE),character(1))
+}
 old[,pair_key:=pair_key(old)]
 new[,pair_key:=pair_key(new)]
 if (anyDuplicated(old$pair_key)) stop("Duplicate preserved pair key",call.=FALSE)

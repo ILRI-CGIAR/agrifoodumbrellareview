@@ -19,8 +19,8 @@ metadata_path <- arg("--metadata")
 guard_path <- arg("--guard-file")
 prior_n <- as.integer(arg("--prior-manifestations"))
 output_dir <- arg("--output-dir")
-if (any(vapply(list(manifest_path,metadata_path,guard_path,output_dir),is.null,logical(1))) || is.na(prior_n)) {
-  stop("Required: --input-manifest --metadata --guard-file --prior-manifestations --output-dir",call.=FALSE)
+if (any(vapply(list(manifest_path,metadata_path,output_dir),is.null,logical(1))) || is.na(prior_n)) {
+  stop("Required: --input-manifest --metadata --prior-manifestations --output-dir [--guard-file optional]",call.=FALSE)
 }
 dir.create(output_dir,recursive=TRUE,showWarnings=FALSE)
 
@@ -127,7 +127,7 @@ meta_key <- setNames(meta$idx,meta$manifestation_key)
 meta_membership <- new.env(hash=TRUE,parent=emptyenv(),size=max(29L,2L*nrow(meta)))
 for (k in meta$manifestation_key) assign(k,TRUE,envir=meta_membership)
 
-guards <- fread(guard_path,na.strings=c("","NA"))
+guards <- if (!is.null(guard_path) && file.exists(guard_path) && file.info(guard_path)$size>0L) fread(guard_path,na.strings=c("","NA")) else data.table(identifier_type=character(),identifier_value=character())
 if (!all(c("identifier_type","identifier_value") %in% names(guards))) stop("Guard file schema invalid",call.=FALSE)
 guards <- unique(guards[,.(identifier_type=tolower(identifier_type),identifier_value)])
 guard_keys <- paste(guards$identifier_type,guards$identifier_value,sep="::")

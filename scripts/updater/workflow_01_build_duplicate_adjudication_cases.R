@@ -81,13 +81,15 @@ authors_text <- function(x) {
   collapse_text(vals)
 }
 
+# Source adapters may store raw_payload as a scalar reference rather than an
+# embedded object. Only named JSON objects support field-level extraction.
+field_object <- function(x) if (is.list(x) && !is.data.frame(x)) x else list()
+
 extract_record <- function(r, expected_source, fallback) {
-  mapped <- if (expected_source=="lens") (r$canonical %||% list()) else (r$mapped_fields %||% list())
-  raw <- if (expected_source=="lens") ((r$lens %||% list())$raw_payload %||% list()) else {
-    container <- r[[expected_source]] %||% list()
-    container[["raw_payload", exact=TRUE]] %||% list()
-  }
-  enrich <- r$abstract_enrichment %||% list()
+  mapped <- field_object(if (expected_source=="lens") r$canonical else r$mapped_fields)
+  container <- field_object(if (expected_source=="lens") r$lens else r[[expected_source]])
+  raw <- field_object(container[["raw_payload", exact = TRUE]])
+  enrich <- field_object(r$abstract_enrichment)
 
   abstract_candidates <- c(
     scalar(mapped$abstract),
@@ -165,9 +167,20 @@ for (i in seq_len(nrow(review))) {
   mj <- meta[.(q$record_j)]
   ri <- get(paste(mi$source,mi$source_record_id,sep="::"),envir=records,inherits=FALSE)
   rj <- get(paste(mj$source,mj$source_record_id,sep="::"),envir=records,inherits=FALSE)
-  stable <- paste(sort(c(paste(mi$source,mi$source_record_id,sep=":"),
-                         paste(mj$source,mj$source_record_id,sep=":"))),collapse="|")
+  identity <- function(src,id) paste0(nchar(src,type="bytes"),":",src,nchar(id,type="bytes"),":",id)
+  stable <- paste(sort(c(identity(as.character(mi$source),as.character(mi$source_record_id)),
+                         identity(as.character(mj$source),as.character(mj$source_record_id)))),collapse="|")
   case_id <- paste0("hr-",substr(digest(stable,algo="sha256",serialize=FALSE),1,20))
+  if(any(c("source_id_i","source_record_id_i","source_id_j","source_record_id_j") %in% names(q))) {
+    if(!all(c("source_id_i","source_record_id_i","source_id_j","source_record_id_j") %in% names(q)))
+      stop("Review pair has incomplete immutable IDs",call.=FALSE)
+    if(!identical(as.character(q$source_id_i),as.character(mi$source)) ||
+       !identical(as.character(q$source_record_id_i),as.character(mi$source_record_id)) ||
+       !identical(as.character(q$source_id_j),as.character(mj$source)) ||
+       !identical(as.character(q$source_record_id_j),as.character(mj$source_record_id)))
+      stop("Review pair source identity differs from metadata",call.=FALSE)
+  }
+
   z <- list(
     schema="living-evidence-map-workflow01-duplicate-adjudication-case-v1",
     review_case_id=case_id,

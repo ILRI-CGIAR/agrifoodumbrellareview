@@ -18,6 +18,15 @@ staging_root <- normalizePath(arg("--staging-root"),mustWork=TRUE)
 run_id <- arg("--run-id")
 repository <- arg("--repository")
 state <- arg("--state","pre_adjudication")
+review_id <- arg("--review-id","")
+review_sheet_id <- arg("--review-sheet-id","")
+execution_pathway <- arg("--execution-pathway",if(nzchar(review_id)) "shiny" else "github")
+if(!execution_pathway %in% c("shiny","github")) stop("Invalid execution pathway",call.=FALSE)
+if(xor(nzchar(review_id),nzchar(review_sheet_id)))
+  stop("State archive requires both review ID and Sheet ID",call.=FALSE)
+if(!nzchar(review_id)) review_id <- NULL
+if(!nzchar(review_sheet_id)) review_sheet_id <- NULL
+archive_only <- identical(tolower(arg("--archive-only","false")),"true")
 output_dir <- arg("--output-dir")
 if (any(vapply(list(run_id,repository,state,output_dir),is.null,logical(1)))) {
   stop("Required: --staging-root --run-id --repository --state --output-dir",call.=FALSE)
@@ -27,7 +36,7 @@ dir.create(output_dir,recursive=TRUE,showWarnings=FALSE)
 output_dir <- normalizePath(output_dir,mustWork=TRUE)
 
 token <- Sys.getenv("ZENODO_ACCESS_TOKEN")
-if (!nzchar(token)) stop("ZENODO_ACCESS_TOKEN is not set",call.=FALSE)
+if (!archive_only && !nzchar(token)) stop("ZENODO_ACCESS_TOKEN is not set",call.=FALSE)
 
 summary_path <- file.path(staging_root,"workflow01_full_five_source","summary.json")
 if (!file.exists(summary_path)) stop("Workflow 01 summary.json missing from staged state",call.=FALSE)
@@ -46,7 +55,7 @@ dir.create(archive_dir,recursive=TRUE,showWarnings=FALSE)
 all_paths <- list.files(staging_root,recursive=TRUE,full.names=TRUE,all.files=TRUE,no..=TRUE)
 if (length(all_paths)) suppressWarnings(Sys.setFileTime(all_paths,as.POSIXct("2000-01-01",tz="UTC")))
 
-state_filename <- sprintf("agrifoodumbrellareview_workflow01_run-%s_%s-state.tar.gz",run_id,state)
+state_filename <- sprintf("LivingEvidenceMap_workflow01_run-%s_%s-state.tar.gz",run_id,state)
 state_path <- file.path(archive_dir,state_filename)
 old <- setwd(staging_root); on.exit(setwd(old),add=TRUE)
 members <- c("workflow01_seed","workflow01_incremental_rescore","workflow01_full_five_source","adjudication","canonical","reports","provenance")
@@ -69,6 +78,9 @@ manifest <- list(
   github_run_id=run_id,
   github_run_url=run_url,
   repository=repository,
+  review_id=review_id,
+  google_sheet_id=review_sheet_id,
+  execution_pathway=execution_pathway,
   source_manifestations=as.integer(summary$source_manifestations),
   preserved_pair_decisions=as.integer(summary$preserved_pair_decisions),
   incremental_candidate_rows=as.integer(summary$incremental_candidate_rows),
@@ -87,7 +99,7 @@ manifest <- list(
     )
   )
 )
-manifest_filename <- sprintf("agrifoodumbrellareview_workflow01_run-%s_manifest.json",run_id)
+manifest_filename <- sprintf("LivingEvidenceMap_workflow01_run-%s_manifest.json",run_id)
 manifest_path <- file.path(archive_dir,manifest_filename)
 writeLines(toJSON(manifest,auto_unbox=TRUE,pretty=TRUE,null="null"),manifest_path)
 
@@ -95,6 +107,12 @@ archive_paths <- c(state_path,manifest_path)
 total_bytes <- sum(file.info(archive_paths)$size)
 if (!is.finite(total_bytes) || total_bytes <= 0) stop("Archive payload is empty",call.=FALSE)
 if (total_bytes > 49 * 1024^3) stop("Archive payload exceeds 49 GiB",call.=FALSE)
+
+if (archive_only) {
+  cat(sprintf("PASS: local Workflow 01 %s archive-only validation: %s; manifest: %s\\n",
+              state,state_path,manifest_path))
+  quit(save="no",status=0L)
+}
 
 api <- "https://zenodo.org/api/deposit/depositions"
 auth <- function(req) req |> req_headers(Authorization=paste("Bearer",token))
@@ -132,7 +150,7 @@ metadata <- list(metadata=list(
   ),
   keywords=list(
     "Living Evidence Map","evidence synthesis","deduplication","Workflow 01",
-    paste0("agrifoodumbrellareview-workflow01-run-",run_id),state
+    paste0("LivingEvidenceMap-workflow01-run-",run_id),state
   ),
   notes=paste0(
     "Source GitHub Actions run: ",run_id,
@@ -204,6 +222,8 @@ receipt <- list(
   state=state,
   github_run_id=run_id,
   github_run_url=run_url,
+  review_id=review_id,
+  google_sheet_id=review_sheet_id,
   source_manifestations=as.integer(summary$source_manifestations),
   preserved_pair_decisions=as.integer(summary$preserved_pair_decisions),
   incremental_candidate_rows=as.integer(summary$incremental_candidate_rows),

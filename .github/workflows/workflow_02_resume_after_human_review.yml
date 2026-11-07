@@ -1,0 +1,647 @@
+name: Workflow 02 - Resume after Shiny adjudication
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/shiny_adjudication/w02_resume_requests/*.json'
+  workflow_dispatch:
+    inputs:
+      google_sheet_id:
+        description: 'Optional review-specific Google Sheet ID inherited from Shiny'
+        required: false
+        default: ''
+        type: string
+      source_run_id:
+        description: 'Stopped Workflow 02 batched run ID that created the Shiny review queue'
+        required: true
+        type: string
+      publish:
+        description: 'Publish validated resumed W02 state to restricted Zenodo'
+        required: true
+        default: false
+        type: boolean
+      validation_only:
+        description: 'Validate automatic trigger/request parsing without touching W02 state'
+        required: false
+        default: false
+        type: boolean
+      auto_launch_w04:
+        description: 'Automatically advance to W04 after W03; use false for Shiny-managed review'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: workflow02-human-resume
+  cancel-in-progress: false
+
+env:
+  WORKFLOW02_BRANCH: main
+  LEM_GOOGLE_SHEET_ID: ${{ inputs.google_sheet_id || secrets.LEM_TEST_GOOGLE_SHEET_ID }}
+  W02_QUEUE_TAB: 'queue_w02_active'
+  W02_DECISIONS_TAB: 'decisions_w02'
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      source_run_id: ${{ steps.resolve.outputs.source_run_id }}
+      publish: ${{ steps.resolve.outputs.publish }}
+      validation_only: ${{ steps.resolve.outputs.validation_only }}
+      auto_launch_w04: ${{ steps.resolve.outputs.auto_launch_w04 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+      - id: resolve
+        name: Resolve W02 resume request
+        shell: bash
+        env:
+          DISPATCH_SOURCE_RUN_ID: ${{ inputs.source_run_id || '' }}
+          DISPATCH_PUBLISH: ${{ inputs.publish || false }}
+          DISPATCH_VALIDATION_ONLY: ${{ inputs.validation_only || false }}
+          DISPATCH_AUTO_LAUNCH_W04: ${{ inputs.auto_launch_w04 != false }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            mapfile -t FILES < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep '^docs/shiny_adjudication/w02_resume_requests/.*\.json$' || true)
+            test "${#FILES[@]}" -eq 1
+            FILE="${FILES[0]}"
+            readarray -t META < <(python3 -c 'import json,re,sys; x=json.load(open(sys.argv[1],encoding="utf-8")); rid=str(x.get("source_run_id","")); assert re.fullmatch(r"[0-9]+",rid), "invalid source_run_id"; print(rid); print("true" if x.get("publish",True) else "false"); print("true" if x.get("validation_only") is True else "false"); print("true" if x.get("auto_launch_w04",False) is True else "false")' "$FILE")
+            RUN_ID="${META[0]}"
+            PUB="${META[1]}"
+            VAL="${META[2]}"
+            AUTO_W04="${META[3]}"
+          else
+            RUN_ID="$DISPATCH_SOURCE_RUN_ID"
+            PUB="$DISPATCH_PUBLISH"
+            VAL="$DISPATCH_VALIDATION_ONLY"
+            AUTO_W04="$DISPATCH_AUTO_LAUNCH_W04"
+          fi
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]]
+          echo "source_run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUB" >> "$GITHUB_OUTPUT"
+          echo "validation_only=$VAL" >> "$GITHUB_OUTPUT"
+          echo "auto_launch_w04=$AUTO_W04" >> "$GITHUB_OUTPUT"
+          echo "PASS: resolved W02 resume request source_run_id=$RUN_ID publish=$PUB validation_only=$VAL"
+
+  validate-only:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.validation_only == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm safe automatic-resume validation
+        run: |
+          echo "PASS: automatic W02 resume trigger and request parsing validated safely for source run ${{ needs.prepare.outputs.source_run_id }}"
+
+  resume:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.validation_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SOURCE_RUN_ID: ${{ needs.prepare.outputs.source_run_id }}
+    steps:
+      - name: Checkout integration branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.6.0'
+          use-public-rspm: true
+
+      - name: Install Google Sheets transport system dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libcurl4-openssl-dev
+
+      - name: Install dependencies
+        shell: Rscript {0}
+        run: |
+          install.packages(c('jsonlite','digest','readr','curl','googlesheets4','httr2'))
+          stopifnot(requireNamespace("curl",quietly=TRUE),
+                    requireNamespace("googlesheets4",quietly=TRUE),
+                    requireNamespace("httr2",quietly=TRUE))
+          cat("PASS: W02 resume Sheets dependencies available\n")
+
+      - name: Parse resume scripts
+        shell: Rscript {0}
+        run: |
+          parse(file='scripts/updater/workflow_02_apply_human_decisions.R')
+          parse(file='scripts/updater/workflow_02_merge_patches.R')
+          parse(file='scripts/updater/workflow_02_apply_patch.R')
+          parse(file='scripts/updater/workflow_02_inventory_state.R')
+          parse(file='scripts/updater/workflow_02_archive_state_to_zenodo.R')
+          parse(file='scripts/updater/workflow_02_update_zenodo_registry.R')
+          cat('PASS: W02 human-resume scripts parse\n')
+
+      - name: Download immutable source-run artefacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p source/prepared source/review source/batches
+
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "workflow02-finalize-input-$SOURCE_RUN_ID" \
+            --dir source/prepared
+
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "workflow02-human-review-$SOURCE_RUN_ID" \
+            --dir source/review
+
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "workflow02-batch-*-$SOURCE_RUN_ID" \
+            --dir source/batches
+
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "workflow02-resumed-checkpoints-$SOURCE_RUN_ID" \
+            --dir source/batches/resumed || true
+
+          test -s source/prepared/outputs/workflow02/input_with_previous_state.jsonl
+          test -s source/prepared/workflow01_state/canonical/records.jsonl
+          test -s source/prepared/workflow01_pointer_path.txt
+          test -f source/prepared/previous_workflow02_pointer_path.txt
+          test -s source/prepared/outputs/workflow02_plan/plan.json
+          test -f source/prepared/previous_cumulative_patch.jsonl
+          test -s source/review/workflow02_human_review_manifest.json
+
+      - name: Identify optional-only W02 pause
+        id: review_type
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          with open("source/review/workflow02_human_review_manifest.json",encoding="utf-8") as f:
+              m=json.load(f)
+          zero=m.get("schema")=="living-evidence-map-workflow02-optional-pause-v1"
+          if zero:
+              assert m.get("blocking_conflicts")==0
+              assert str(m.get("source_run_id"))==os.environ["SOURCE_RUN_ID"]
+          else:
+              assert m.get("schema")=="living-evidence-map-workflow02-human-review-package-v1"
+          with open(os.environ["GITHUB_OUTPUT"],"a",encoding="utf-8") as f:
+              f.write("zero_cases="+str(zero).lower()+"\n")
+          print("W02 human-review cases absent:",zero)
+          PY
+
+      - name: Prepare Google credential
+        env:
+          LEM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON"
+          printf '%s' "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/lem-google-service-account.json"
+          chmod 600 "$RUNNER_TEMP/lem-google-service-account.json"
+          Rscript -e 'x<-jsonlite::fromJSON(commandArgs(TRUE)[1]);stopifnot(identical(x$type,"service_account"),nzchar(x$client_email),nzchar(x$private_key));cat("PASS: service-account credential format\n")' "$RUNNER_TEMP/lem-google-service-account.json"
+          echo "LEM_GOOGLE_CREDENTIAL_FILE=$RUNNER_TEMP/lem-google-service-account.json" >> "$GITHUB_ENV"
+
+      - name: Export and validate matching Shiny queue and active decisions
+        if: ${{ steps.review_type.outputs.zero_cases != 'true' }}
+        shell: Rscript {0}
+        run: |
+          suppressPackageStartupMessages({
+            library(googlesheets4)
+            library(jsonlite)
+            library(digest)
+          })
+          `%||%` <- function(x,y) if (is.null(x)) y else x
+
+          dir.create("outputs/w02_resume", recursive=TRUE, showWarnings=FALSE)
+          ss <- Sys.getenv("LEM_GOOGLE_SHEET_ID")
+          source_run_id <- Sys.getenv("SOURCE_RUN_ID")
+          queue_tab <- Sys.getenv("W02_QUEUE_TAB")
+          decisions_tab <- Sys.getenv("W02_DECISIONS_TAB")
+          expected_batch <- paste0("w02-run-", source_run_id)
+
+          gs4_auth(path=Sys.getenv("LEM_GOOGLE_CREDENTIAL_FILE"), cache=FALSE)
+
+          tabs <- sheet_names(ss)
+          if (!queue_tab %in% tabs) stop("W02 active queue tab does not exist")
+          if (!decisions_tab %in% tabs) stop("W02 decisions tab does not exist")
+
+          q <- read_sheet(ss, sheet=queue_tab, col_types="c")
+          required_q <- c("batch_id","queue_sha256","case_index","review_case_id","case_json")
+          if (!all(required_q %in% names(q))) stop("W02 queue missing required columns")
+          if (!nrow(q)) stop("W02 active queue is empty")
+          q <- q[order(as.integer(q$case_index)), required_q, drop=FALSE]
+
+          if (length(unique(q$batch_id)) != 1L || !identical(unique(q$batch_id)[[1L]], expected_batch)) {
+            stop(sprintf("Active W02 queue belongs to %s, not source run %s",
+                         paste(unique(q$batch_id), collapse=","), source_run_id))
+          }
+          if (length(unique(q$queue_sha256)) != 1L) stop("W02 active queue has multiple queue hashes")
+          queue_sha <- unique(q$queue_sha256)[[1L]]
+
+          queue_text <- paste0(paste(q$case_json, collapse="\n"), "\n")
+          if (!identical(digest(queue_text,algo="sha256",serialize=FALSE), queue_sha)) {
+            stop("W02 active queue reconstruction SHA mismatch")
+          }
+
+          writeLines(q$case_json, "outputs/w02_resume/queue.jsonl", useBytes=TRUE)
+          if (!identical(digest(file="outputs/w02_resume/queue.jsonl",algo="sha256",serialize=FALSE), queue_sha)) {
+            stop("Written W02 queue SHA mismatch")
+          }
+
+          d <- read_sheet(ss, sheet=decisions_tab, col_types="c")
+          required_d <- c(
+            "decision_id","review_case_id","record_id","provider","field","reason",
+            "decision","note","reviewer","resolved_at_utc","queue_sha256",
+            "supersedes_decision_id"
+          )
+          if (!all(required_d %in% names(d))) stop("W02 decisions tab missing required columns")
+          d <- d[d$queue_sha256 == queue_sha, required_d, drop=FALSE]
+          if (!nrow(d)) stop("No W02 Shiny decisions found for this queue")
+
+          t <- as.POSIXct(d$resolved_at_utc,format="%Y-%m-%dT%H:%M:%SZ",tz="UTC")
+          if (any(is.na(t))) stop("W02 decisions contain invalid resolved_at_utc")
+          ord <- order(t, seq_len(nrow(d)), decreasing=TRUE)
+          d <- d[ord,,drop=FALSE]
+          active <- d[!duplicated(d$review_case_id),,drop=FALSE]
+
+          qids <- q$review_case_id
+          if (any(!active$review_case_id %in% qids)) stop("W02 decisions reference case(s) outside active queue")
+          missing <- setdiff(qids, active$review_case_id)
+          if (length(missing)) stop(sprintf("W02 adjudication incomplete: %d case(s) have no active decision",length(missing)))
+          if (any(active$decision == "uncertain")) {
+            stop(sprintf("W02 adjudication incomplete: %d uncertain decision(s) remain",sum(active$decision=="uncertain")))
+          }
+
+          active <- active[match(qids,active$review_case_id),,drop=FALSE]
+          con <- file("outputs/w02_resume/decisions.jsonl","wt",encoding="UTF-8")
+          for (i in seq_len(nrow(active))) {
+            z <- as.list(active[i,,drop=FALSE])
+            z$decision_id <- NULL
+            z$supersedes_decision_id <- NULL
+            writeLines(toJSON(z,auto_unbox=TRUE,null="null",na="null"),con,useBytes=TRUE)
+          }
+          close(con)
+
+          writeLines(queue_sha,"outputs/w02_resume/queue_sha256.txt")
+          cat(sprintf("PASS: exported %d complete active W02 decisions for queue %s\n",nrow(active),queue_sha))
+
+      - name: Reconstruct exact source-run current patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow02
+          : > outputs/workflow02/current_patch.jsonl
+          : > outputs/workflow02/enrichment_audit.jsonl
+          : > outputs/workflow02/retry_queue.jsonl
+
+          BATCH_COUNT="$(Rscript -e 'x<-jsonlite::fromJSON("source/prepared/outputs/workflow02_plan/plan.json");cat(as.integer(x$batch_count))')"
+          if [ "$BATCH_COUNT" != "0" ]; then
+            mapfile -t PATCHES < <(find source/batches -type f -name current_patch.jsonl | sort)
+            test "${#PATCHES[@]}" -eq "$BATCH_COUNT"
+            for P in "${PATCHES[@]}"; do
+              Rscript scripts/updater/workflow_02_merge_patches.R \
+                --previous outputs/workflow02/current_patch.jsonl \
+                --current "$P" \
+                --output outputs/workflow02/current_patch.next.jsonl
+              mv outputs/workflow02/current_patch.next.jsonl outputs/workflow02/current_patch.jsonl
+            done
+            find source/batches -type f -name enrichment_audit.jsonl -print0 | sort -z | xargs -0 cat > outputs/workflow02/enrichment_audit.jsonl
+            find source/batches -type f -name retry_queue.jsonl -print0 | sort -z | xargs -0 cat > outputs/workflow02/retry_queue.jsonl
+          fi
+
+          # Rebuild the same audited enrichment report as the uninterrupted W02 route.
+          # Bind its patch checksum to the final human-adjudicated current patch below.
+          if [ "$BATCH_COUNT" != "0" ]; then
+            Rscript scripts/updater/workflow_02_aggregate_batches.R \
+              --batch-root source/batches \
+              --plan source/prepared/outputs/workflow02_plan/plan.json \
+              --input source/prepared/outputs/workflow02/input_with_previous_state.jsonl \
+              --current-patch outputs/workflow02/current_patch.jsonl \
+              --output outputs/workflow02/enrichment_report.json
+          else
+            cp source/prepared/outputs/workflow02_plan/plan.json outputs/workflow02/enrichment_report.json
+          fi
+          test -s outputs/workflow02/enrichment_report.json
+          test -f outputs/workflow02/current_patch.jsonl
+          echo "PASS: reconstructed source-run current W02 patch and enrichment report from immutable checkpoints"
+
+      - name: Apply human decisions to current patch
+        if: ${{ steps.review_type.outputs.zero_cases != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          QUEUE_SHA="$(cat outputs/w02_resume/queue_sha256.txt)"
+          Rscript scripts/updater/workflow_02_apply_human_decisions.R \
+            --queue outputs/w02_resume/queue.jsonl \
+            --decisions outputs/w02_resume/decisions.jsonl \
+            --current-patch outputs/workflow02/current_patch.jsonl \
+            --output-patch outputs/workflow02/current_patch_human.jsonl \
+            --manifest outputs/w02_resume/human_application_manifest.json \
+            --expected-queue-sha256 "$QUEUE_SHA"
+
+      - name: Preserve original W02 patch when no normal adjudication is required
+        if: ${{ steps.review_type.outputs.zero_cases == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp outputs/workflow02/current_patch.jsonl outputs/workflow02/current_patch_human.jsonl
+          mkdir -p outputs/w02_resume
+          python3 - <<'PY'
+          import json,os
+          p="outputs/w02_resume/human_application_manifest.json"
+          with open(p,"w",encoding="utf-8") as f:
+              json.dump({"schema":"living-evidence-map-workflow02-optional-pause-resume-v1",
+                         "status":"PASS","source_run_id":os.environ["SOURCE_RUN_ID"],
+                         "human_decisions":0},f)
+          PY
+          echo "PASS: zero normal adjudication cases; untouched W02 patch retained"
+
+      - name: Apply optional manually entered abstracts before existing W02 replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$LEM_GOOGLE_CREDENTIAL_FILE"
+          Rscript scripts/updater/workflow_02_apply_optional_abstracts.R \
+            --sheet-id "$LEM_GOOGLE_SHEET_ID" \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --credential "$LEM_GOOGLE_CREDENTIAL_FILE" \
+            --patch outputs/workflow02/current_patch_human.jsonl \
+            --input source/prepared/outputs/workflow02/input_with_previous_state.jsonl \
+            --output-patch outputs/workflow02/current_patch_human_with_abstracts.jsonl
+          mv outputs/workflow02/current_patch_human_with_abstracts.jsonl \
+            outputs/workflow02/current_patch_human.jsonl
+
+      - name: Exact replay human-adjudicated current patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_02_apply_patch.R \
+            --input source/prepared/outputs/workflow02/input_with_previous_state.jsonl \
+            --patch outputs/workflow02/current_patch_human.jsonl \
+            --output outputs/workflow02/current_human_replayed.jsonl \
+            --report outputs/w02_resume/current_human_replay.json \
+            --mode exact
+
+      - name: Merge cumulative W02 state and verify reconstruction
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_02_merge_patches.R \
+            --previous source/prepared/previous_cumulative_patch.jsonl \
+            --current outputs/workflow02/current_patch_human.jsonl \
+            --output outputs/workflow02/cumulative_patch.jsonl
+
+          Rscript scripts/updater/workflow_02_apply_patch.R \
+            --input source/prepared/workflow01_state/canonical/records.jsonl \
+            --patch outputs/workflow02/cumulative_patch.jsonl \
+            --output outputs/workflow02/enriched.jsonl \
+            --report outputs/w02_resume/cumulative_patch_replay.json \
+            --mode fill_missing
+
+          Rscript -e "library(digest);a<-digest(file='outputs/workflow02/current_human_replayed.jsonl',algo='sha256',serialize=FALSE);b<-digest(file='outputs/workflow02/enriched.jsonl',algo='sha256',serialize=FALSE);stopifnot(a==b);cat('PASS: W02 human-adjudicated current and cumulative reconstructions are identical\n')"
+
+      - name: Inventory final resumed state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow02_state
+          Rscript scripts/updater/workflow_02_inventory_state.R \
+            --input outputs/workflow02/enriched.jsonl \
+            --report outputs/workflow02/final_inventory.json \
+            --missing-both-queue outputs/workflow02/missing_both_queue.jsonl
+
+          cp outputs/workflow02/cumulative_patch.jsonl outputs/workflow02_state/
+          cp outputs/workflow02/enrichment_report.json outputs/workflow02_state/
+          cp outputs/workflow02/enrichment_audit.jsonl outputs/workflow02_state/
+          cp outputs/workflow02/retry_queue.jsonl outputs/workflow02_state/
+          cp outputs/workflow02/final_inventory.json outputs/workflow02_state/
+          cp outputs/workflow02/missing_both_queue.jsonl outputs/workflow02_state/
+          cp outputs/w02_resume/cumulative_patch_replay.json outputs/workflow02_state/
+
+          W01_SHA="$(cat source/prepared/workflow01_sha.txt)"
+          W01_POINTER="$(cat source/prepared/workflow01_pointer_path.txt)"
+          PREV_W02_POINTER="$(cat source/prepared/previous_workflow02_pointer_path.txt)"
+          W01_SHA="$W01_SHA" W01_POINTER="$W01_POINTER" PREV_W02_POINTER="$PREV_W02_POINTER" Rscript -e "library(jsonlite);library(digest);x<-list(schema='living-evidence-map-workflow02-state-manifest-v1',workflow='02',execution='deterministic_batched_human_resumed',repairable_fields=c('title','abstract','author_keywords'),source_github_run_id=Sys.getenv('SOURCE_RUN_ID'),resume_github_run_id=Sys.getenv('GITHUB_RUN_ID'),workflow01_pointer=Sys.getenv('W01_POINTER'),workflow01_canonical_sha256=Sys.getenv('W01_SHA'),previous_workflow02_pointer=if(nzchar(Sys.getenv('PREV_W02_POINTER')))Sys.getenv('PREV_W02_POINTER') else NULL,final_enriched_sha256=digest(file='outputs/workflow02/enriched.jsonl',algo='sha256',serialize=FALSE),human_adjudication_manifest_sha256=digest(file='outputs/w02_resume/human_application_manifest.json',algo='sha256',serialize=FALSE),created_at_utc=format(Sys.time(),tz='UTC',format='%Y-%m-%dT%H:%M:%SZ'));writeLines(toJSON(x,auto_unbox=TRUE,pretty=TRUE,null='null'),'outputs/workflow02_state/state_manifest.json')"
+
+      - name: Publish resumed sparse Workflow 02 state to restricted Zenodo
+        if: ${{ needs.prepare.outputs.publish == 'true' }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow02_zenodo
+          W01_SHA="$(cat source/prepared/workflow01_sha.txt)"
+          PREV_W02_POINTER="$(cat source/prepared/previous_workflow02_pointer_path.txt)"
+          ARGS=(
+            --state-dir outputs/workflow02_state
+            --run-id "$GITHUB_RUN_ID"
+            --repository "$GITHUB_REPOSITORY"
+            --output-dir outputs/workflow02_zenodo
+            --workflow01-canonical-sha256 "$W01_SHA"
+          )
+          if [ -n "$PREV_W02_POINTER" ]; then ARGS+=(--previous-pointer "$PREV_W02_POINTER"); fi
+          Rscript scripts/updater/workflow_02_archive_state_to_zenodo.R "${ARGS[@]}"
+
+      - name: Register published resumed Workflow 02 state
+        if: ${{ needs.prepare.outputs.publish == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_02_update_zenodo_registry.R \
+            --receipt outputs/workflow02_zenodo/zenodo_receipt.json \
+            --registry docs/enrichment/zenodo_registry.csv \
+            --pointer-dir docs/enrichment/zenodo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/enrichment/zenodo_registry.csv docs/enrichment/zenodo/run-"$GITHUB_RUN_ID".json
+          if ! git diff --cached --quiet; then
+            git commit -m "Register resumed Workflow 02 enrichment state run $GITHUB_RUN_ID"
+            git pull --rebase origin "$WORKFLOW02_BRANCH"
+            git push origin HEAD:"$WORKFLOW02_BRANCH"
+          fi
+
+      - name: Update current-run live status through W02
+        if: ${{ needs.prepare.outputs.publish == 'true' }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+          LEM_GOOGLE_SHEET_ID: ${{ inputs.google_sheet_id || secrets.LEM_TEST_GOOGLE_SHEET_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_current_run_status_observer.R \
+            --force-stage W02 \
+            --pointer "docs/enrichment/zenodo/run-$GITHUB_RUN_ID.json"
+          test -s "$LEM_GOOGLE_CREDENTIAL_FILE"
+          Rscript scripts/updater/workflow_current_run_status_to_shiny.R \
+            --status docs/current_run/current_run_status.json \
+            --sheet-id "$LEM_GOOGLE_SHEET_ID" \
+            --credential "$LEM_GOOGLE_CREDENTIAL_FILE"
+          Rscript scripts/reporting/write_workflow09_stage_summary.R --stage W02 --run-id "$GITHUB_RUN_ID"
+          Rscript scripts/reporting/refresh_workflow09_input_manifest.R
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/current_run/current_run_status.json docs/reporting/workflow_09_inputs/current
+          if ! git diff --cached --quiet; then
+            git commit -m "Update current-run status through W02 [skip ci]"
+            git pull --rebase origin "$WORKFLOW02_BRANCH"
+            git push origin HEAD:"$WORKFLOW02_BRANCH"
+          fi
+
+      - name: Acknowledge consumed W02 Shiny batch
+        if: ${{ needs.prepare.outputs.publish == 'true' && steps.review_type.outputs.zero_cases != 'true' }}
+        env:
+          LEM_GOOGLE_SHEET_ID: ${{ inputs.google_sheet_id || secrets.LEM_TEST_GOOGLE_SHEET_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$LEM_GOOGLE_CREDENTIAL_FILE"
+          QUEUE_SHA="$(cat outputs/w02_resume/queue_sha256.txt)"
+          OUTPUT_SHA="$(Rscript -e 'cat(digest::digest(file="outputs/workflow02/enriched.jsonl",algo="sha256",serialize=FALSE))')"
+          Rscript scripts/updater/workflow_shiny_batch_status.R \
+            --stage "02" \
+            --batch-id "w02-run-$SOURCE_RUN_ID" \
+            --queue-sha256 "$QUEUE_SHA" \
+            --status consumed \
+            --sheet-id "$LEM_GOOGLE_SHEET_ID" \
+            --credential "$LEM_GOOGLE_CREDENTIAL_FILE" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --output-sha256 "$OUTPUT_SHA" \
+            --message "Workflow 02 human decisions applied; resumed sparse state archived and registered."
+
+      - name: Mark completed zero-conflict optional pause in review Sheet
+        if: ${{ needs.prepare.outputs.publish == 'true' && steps.review_type.outputs.zero_cases == 'true' }}
+        shell: Rscript {0}
+        run: |
+          suppressPackageStartupMessages(library(googlesheets4))
+          ss <- Sys.getenv("LEM_GOOGLE_SHEET_ID")
+          gs4_auth(path=Sys.getenv("LEM_GOOGLE_CREDENTIAL_FILE"),cache=FALSE)
+          tab <- "w02_optional_pause"
+          if(!tab %in% sheet_names(ss)) stop("Missing zero-case W02 pause ledger")
+          d <- read_sheet(ss,sheet=tab,col_types="c")
+          run <- Sys.getenv("SOURCE_RUN_ID")
+          hits <- which(as.character(d$source_run_id)==run &
+                        as.character(d$google_sheet_id)==ss)
+          if(!length(hits)) stop("No matching zero-case W02 pause entry to acknowledge")
+          z <- d[hits[length(hits)],,drop=FALSE]
+          z$status <- "consumed"
+          z$created_at_utc <- format(Sys.time(),tz="UTC",format="%Y-%m-%dT%H:%M:%SZ")
+          sheet_append(ss,data=z,sheet=tab)
+          cat("PASS: zero-conflict optional W02 pause marked consumed\n")
+
+      - name: Build and publish post-W02 lean checkpoint after human resume
+        if: ${{ needs.prepare.outputs.publish == 'true' }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          W02_POINTER="docs/enrichment/zenodo/run-$GITHUB_RUN_ID.json"
+          test -s "$W02_POINTER"
+          EXPECTED_SHA="$(P="$W02_POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("P"));cat(as.character(x$final_enriched_sha256))')"
+          ACTUAL_SHA="$(Rscript -e 'cat(digest::digest(file="outputs/workflow02/enriched.jsonl",algo="sha256",serialize=FALSE))')"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+
+          mkdir -p outputs/post_w02_lean outputs/lean_checkpoint_zenodo
+          Rscript scripts/updater/workflow_02_compact_post_w02_canonical.R \
+            --input outputs/workflow02/enriched.jsonl \
+            --output outputs/post_w02_lean/canonical_lean.jsonl \
+            --report outputs/post_w02_lean/compaction_report.json \
+            --expected-input-sha256 "$ACTUAL_SHA"
+
+          LEAN_SHA="$(Rscript -e 'cat(digest::digest(file="outputs/post_w02_lean/canonical_lean.jsonl",algo="sha256",serialize=FALSE))')"
+          Rscript scripts/updater/workflow_02_archive_lean_checkpoint_to_zenodo.R \
+            --state-dir outputs/post_w02_lean \
+            --run-id "$GITHUB_RUN_ID" \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output-dir outputs/lean_checkpoint_zenodo \
+            --input-canonical-sha256 "$ACTUAL_SHA" \
+            --lean-canonical-sha256 "$LEAN_SHA"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin "$WORKFLOW02_BRANCH"
+          Rscript scripts/updater/workflow_02_update_lean_checkpoint_registry.R \
+            --receipt outputs/lean_checkpoint_zenodo/zenodo_receipt.json \
+            --registry docs/compaction/zenodo_registry.csv \
+            --pointer-dir docs/compaction/zenodo
+          LEAN_POINTER="docs/compaction/zenodo/run-$GITHUB_RUN_ID.json"
+          test -s "$LEAN_POINTER"
+          git add docs/compaction/zenodo_registry.csv "$LEAN_POINTER"
+          if ! git diff --cached --quiet; then
+            git commit -m "Register resumed W02 to W03 lean handoff for run $GITHUB_RUN_ID"
+            git pull --rebase origin "$WORKFLOW02_BRANCH"
+            git push origin HEAD:"$WORKFLOW02_BRANCH"
+          fi
+
+          rm -rf outputs/restored_w03
+          Rscript scripts/updater/workflow_03_restore_lean_checkpoint.R \
+            --pointer "$LEAN_POINTER" \
+            --output-dir outputs/restored_w03
+          RESTORED_SHA="$(Rscript -e 'cat(digest::digest(file="outputs/restored_w03/canonical_lean.jsonl",algo="sha256",serialize=FALSE))')"
+          test "$RESTORED_SHA" = "$LEAN_SHA"
+          echo "PASS: resumed W02 lean checkpoint published and restored exactly"
+
+      - name: Trigger Workflow 03 after resumed Workflow 02
+        if: ${{ needs.prepare.outputs.publish == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          LEAN_POINTER="docs/compaction/zenodo/run-$GITHUB_RUN_ID.json"
+          test -s "$LEAN_POINTER"
+          FIRST_RUN="$(Rscript -e 'x<-jsonlite::fromJSON("docs/current_run/current_run_status.json",simplifyVector=FALSE);stopifnot(is.logical(x$first_run),length(x$first_run)==1L);cat(tolower(as.character(x$first_run)))')"
+          gh workflow run workflow_03_production.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$WORKFLOW02_BRANCH" \
+            -f limit='0' \
+            -f batch_size='100' \
+            -f first_run="$FIRST_RUN" \
+            -f auto_launch_w04="${{ needs.prepare.outputs.auto_launch_w04 }}" \
+            -f publish='true' \
+            -f lean_pointer_path="$LEAN_POINTER"
+          echo "PASS: dispatched Workflow 03 after resumed W02 run $GITHUB_RUN_ID"
+
+      - name: Upload validated resumed W02 handoff
+        if: ${{ needs.prepare.outputs.publish == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow02-handoff-${{ github.run_id }}
+          path: |
+            outputs/workflow02/enriched.jsonl
+            outputs/workflow02_state/state_manifest.json
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload W02 human-resume validation artefact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow02-human-resume-${{ github.run_id }}
+          path: |
+            outputs/w02_resume/
+            outputs/workflow02/current_patch_human.jsonl
+            outputs/workflow02/cumulative_patch.jsonl
+            outputs/workflow02/final_inventory.json
+            outputs/workflow02_state/state_manifest.json
+            outputs/workflow02_zenodo/zenodo_receipt.json
+          retention-days: 90
+          if-no-files-found: warn

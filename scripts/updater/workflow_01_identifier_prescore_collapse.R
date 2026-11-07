@@ -119,6 +119,15 @@ selected <- external[, .SD[1L], by=component_key]
 if (anyDuplicated(selected$component_key)) stop("Component relation selection is not unique",call.=FALSE)
 
 out_pairs <- selected[,.(record_i,record_j,blocks)]
+# Carry immutable identities across the representative-pair selection boundary.
+if(nrow(out_pairs)) {
+  out_pairs[, `:=`(
+    source_id_i=as.character(meta$source[record_i]),
+    source_record_id_i=as.character(meta$source_record_id[record_i]),
+    source_id_j=as.character(meta$source[record_j]),
+    source_record_id_j=as.character(meta$source_record_id[record_j])
+  )]
+}
 fwrite(out_pairs,file.path(output_dir,"all_candidate_pairs.csv"))
 fwrite(meta[, !"component"],file.path(output_dir,"normalised_metadata.csv"))
 fwrite(selected,file.path(output_dir,"representative_pair_selection.csv"))

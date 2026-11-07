@@ -97,10 +97,6 @@ make_req <- function(url,query=list()){
   if(nzchar(openalex_key)) req<-req_headers(req,Authorization=paste("Bearer",openalex_key))
   req |> req_timeout(60) |> req_retry(max_tries=5,retry_on_failure=TRUE,backoff=function(tries)min(30,2^(tries-1L)))
 }
-safe_perform <- function(req){
-  tryCatch(req |> req_error(is_error=function(resp)FALSE) |> req_perform(),
-           error=function(e) structure(list(message=conditionMessage(e)),class="openalex_transport_error"))
-}
 oa_map <- new.env(parent=emptyenv())
 audit <- list(); audit_n <- 0L
 
@@ -111,12 +107,12 @@ if(length(doi_idx)){
     dois <- vapply(meta[b],function(z)z$doi,character(1))
     filt <- paste(dois,collapse="|")
     req <- make_req("https://api.openalex.org/works",list(filter=paste0("doi:",filt),per_page=100,select="id,doi,is_retracted,type"))
-    resp <- safe_perform(req)
-    st <- if(inherits(resp,"openalex_transport_error")) NA_integer_ else resp_status(resp)
-    if(is.na(st)||st!=200L){
-      audit_n<-audit_n+1L;audit[[audit_n]]<-list(kind="doi_batch_error",http_status=st,error=if(inherits(resp,"openalex_transport_error"))resp$message else NULL,dois=dois)
+    resp <- req |> req_error(is_error=function(resp)FALSE) |> req_perform()
+    st <- resp_status(resp)
+    if(st!=200L){
+      audit_n<-audit_n+1L;audit[[audit_n]]<-list(kind="doi_batch_error",http_status=st,dois=dois)
       for(d in dois) oa_map[[paste0("doi:",d)]] <- list(
-        work_id=NULL,is_retracted=NULL,type=NULL,lookup_status=if(is.na(st))"transport_error" else paste0("http_",st)
+        work_id=NULL,is_retracted=NULL,type=NULL,lookup_status=paste0("http_",st)
       )
       next
     }
@@ -134,14 +130,14 @@ for(i in seq_along(meta)){
   if(!nzchar(z$doi) && nzchar(z$openalex_id)){
     wid<-sub("^https://openalex.org/","",z$openalex_id,ignore.case=TRUE)
     req<-make_req(paste0("https://api.openalex.org/works/",URLencode(wid,reserved=TRUE)),list(select="id,doi,is_retracted,type"))
-    resp<-safe_perform(req)
-    st<-if(inherits(resp,"openalex_transport_error")) NA_integer_ else resp_status(resp)
-    if(!is.na(st)&&st==200L){
+    resp<-req |> req_error(is_error=function(resp)FALSE) |> req_perform()
+    st<-resp_status(resp)
+    if(st==200L){
       w<-resp_body_json(resp,simplifyVector=FALSE)
       oa_map[[paste0("wid:",wid)]]<-list(work_id=sub("^https://openalex.org/","",clean(w$id)),is_retracted=isTRUE(w$is_retracted),type=clean(w$type),lookup_status="found")
     } else {
-      oa_map[[paste0("wid:",wid)]]<-list(work_id=wid,is_retracted=NULL,type=NULL,lookup_status=if(!is.na(st)&&st==404L)"not_found" else if(is.na(st))"transport_error" else paste0("http_",st))
-      if(is.na(st)||st!=404L){audit_n<-audit_n+1L;audit[[audit_n]]<-list(kind="openalex_id_error",record_id=z$record_id,openalex_id=wid,http_status=st,error=if(inherits(resp,"openalex_transport_error"))resp$message else NULL)}
+      oa_map[[paste0("wid:",wid)]]<-list(work_id=wid,is_retracted=NULL,type=NULL,lookup_status=if(st==404L)"not_found" else paste0("http_",st))
+      if(st!=404L){audit_n<-audit_n+1L;audit[[audit_n]]<-list(kind="openalex_id_error",record_id=z$record_id,openalex_id=wid,http_status=st)}
     }
   }
 }
@@ -170,7 +166,7 @@ for(i in seq_along(meta)){
     notfound<-notfound+1L
   } else {
     unavailable<-unavailable+1L
-    if(grepl("^(http_|transport_error$)",oa$lookup_status%||%"")) technical_lookup_errors<-technical_lookup_errors+1L
+    if(grepl("^http_",oa$lookup_status%||%"")) technical_lookup_errors<-technical_lookup_errors+1L
   }
   tm<-prefix_match(z$title)
   res<-resolve_code(oa,tm)
@@ -186,7 +182,7 @@ for(i in seq_along(meta)){
     publication_status=list(
       code=code,
       exclude_from_workflow04=excl,
-      needs_review=grepl("^(http_|transport_error$)",oa$lookup_status%||%""),
+      needs_review=grepl("^http_",oa$lookup_status%||%""),
       evidence_conflict=isTRUE(res$conflict),
       multiple_positive_signals=isTRUE(res$multiple_positive_signals),
       positive_codes=if(length(res$positive_codes))res$positive_codes else list(),
@@ -220,9 +216,9 @@ report<-list(
   output_sha256=digest(file=output_path,algo="sha256",serialize=FALSE),
   checked_at=checked_at
 )
-if(technical_lookup_errors>0L) report$provider_warning <- "unresolved_openalex_lookup_errors"
+if(technical_lookup_errors>0L) report$status <- "FAIL_PROVIDER_ERRORS"
 writeLines(toJSON(report,auto_unbox=TRUE,pretty=TRUE,null="null",na="null"),report_path,useBytes=TRUE)
 if(technical_lookup_errors>0L) {
-  warning(sprintf("Workflow 03 continuing: %d record(s) have unresolved OpenAlex technical lookup errors; see audit and needs_review flags",technical_lookup_errors),call.=FALSE)
+  stop(sprintf("Workflow 03 blocked: %d record(s) have unresolved OpenAlex technical lookup errors",technical_lookup_errors),call.=FALSE)
 }
 cat(sprintf("PASS: Workflow 03 publication-status scan processed %d records; excluded=%d conflicts=%d\n",length(meta),excluded,conflicts))

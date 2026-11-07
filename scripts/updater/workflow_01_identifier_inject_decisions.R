@@ -16,12 +16,33 @@ rescored_path <- arg("--rescored")
 safe_path <- arg("--safe-edges")
 output_path <- arg("--output")
 audit_path <- arg("--audit")
-if (any(vapply(list(rescored_path,safe_path,output_path,audit_path),is.null,logical(1)))) {
-  stop("Required: --rescored --safe-edges --output --audit",call.=FALSE)
+metadata_path <- arg("--metadata")
+if (any(vapply(list(rescored_path,safe_path,output_path,audit_path,metadata_path),is.null,logical(1)))) {
+  stop("Required: --rescored --safe-edges --metadata --output --audit",call.=FALSE)
 }
 
 x <- fread(rescored_path,na.strings=c("","NA"))
 safe <- fread(safe_path,na.strings=c("","NA"))
+meta <- fread(metadata_path,na.strings=c("","NA"))
+if(!all(c("idx","source","source_record_id")%in%names(meta)) ||
+   !identical(as.integer(meta$idx),seq_len(nrow(meta))) ||
+   anyDuplicated(paste(meta$source,meta$source_record_id,sep="::")))
+ stop("Metadata lacks unique, contiguous source identities",call.=FALSE)
+verify <- function(x) {
+ if(!nrow(x))return(invisible(TRUE))
+ cols<-c("source_id_i","source_record_id_i","source_id_j","source_record_id_j")
+ if(!all(cols%in%names(x)))stop("Scored pairs lack persisted source IDs",call.=FALSE)
+ i<-as.integer(x$record_i);j<-as.integer(x$record_j)
+ if(anyNA(i)||anyNA(j)||any(i<1L|i>nrow(meta)|j<1L|j>nrow(meta)))
+  stop("Scored index outside metadata",call.=FALSE)
+ if(anyNA(x[,..cols]) || any(x$source_id_i!=meta$source[i] |
+    x$source_record_id_i!=meta$source_record_id[i] |
+    x$source_id_j!=meta$source[j] |
+    x$source_record_id_j!=meta$source_record_id[j]))
+  stop("Scored pair IDs disagree with numeric coordinates",call.=FALSE)
+ invisible(TRUE)
+}
+
 if (!all(c("record_i","record_j","rescored_classification","rescored_rule") %in% names(x))) {
   stop("Rescored input missing required fields",call.=FALSE)
 }
@@ -38,9 +59,18 @@ safe <- unique(safe,by="pair_key")
 overlap <- intersect(x$pair_key,safe$pair_key)
 if (length(overlap)) stop(sprintf("%d safe identifier edges overlap scored representative pairs",length(overlap)),call.=FALSE)
 
+verify(x)
+if(nrow(safe) && (anyNA(safe$idx_i)||anyNA(safe$idx_j)||
+   any(safe$idx_i<1L|safe$idx_i>nrow(meta)|
+       safe$idx_j<1L|safe$idx_j>nrow(meta))))
+ stop("Identifier-safe edge points outside source identity manifest",call.=FALSE)
 safe_rows <- data.table(
   record_i=as.integer(safe$idx_i),
   record_j=as.integer(safe$idx_j),
+  source_id_i=as.character(meta$source[as.integer(safe$idx_i)]),
+  source_record_id_i=as.character(meta$source_record_id[as.integer(safe$idx_i)]),
+  source_id_j=as.character(meta$source[as.integer(safe$idx_j)]),
+  source_record_id_j=as.character(meta$source_record_id[as.integer(safe$idx_j)]),
   classification="duplicate",
   rule="identifier_safe_preresolve",
   rescored_classification="duplicate",

@@ -1,0 +1,347 @@
+name: Workflow 03 - Publication status
+
+on:
+  workflow_call:
+    inputs:
+      auto_launch_w04:
+        description: Automatically dispatch W04 after W03 (disable only for Shiny-managed review)
+        required: false
+        default: true
+        type: boolean
+      first_run:
+        description: Initialise an entirely new review, with no prior baseline
+        required: false
+        default: false
+        type: boolean
+      limit:
+        required: false
+        default: '0'
+        type: string
+      batch_size:
+        required: false
+        default: '100'
+        type: string
+      publish:
+        required: false
+        default: true
+        type: boolean
+      lean_pointer_path:
+        required: true
+        type: string
+    secrets:
+      ZENODO_ACCESS_TOKEN:
+        required: true
+      OPENALEX_API_KEY:
+        required: false
+      LEM_GOOGLE_SERVICE_ACCOUNT_JSON:
+        required: false
+    outputs:
+      pointer_path:
+        description: 'Authoritative Workflow 03 Zenodo pointer path when a full state is published'
+        value: ${{ jobs.publication-status.outputs.pointer_path }}
+
+  workflow_dispatch:
+    inputs:
+      auto_launch_w04:
+        description: Automatically dispatch W04 after W03 (disable only for Shiny-managed review)
+        required: false
+        default: true
+        type: boolean
+      first_run:
+        description: Initialise an entirely new review, with no prior baseline
+        required: false
+        default: false
+        type: boolean
+      limit:
+        description: 'Records to scan; 0 = all records in the incoming lean canonical checkpoint'
+        required: true
+        default: '20'
+        type: string
+      batch_size:
+        description: 'DOIs per OpenAlex OR-filter request (max 100)'
+        required: true
+        default: '100'
+        type: string
+      publish:
+        description: 'Publish a validated full run to restricted Zenodo'
+        required: true
+        default: false
+        type: boolean
+      lean_pointer_path:
+        description: 'Authoritative post-W02 lean canonical pointer'
+        required: true
+        type: string
+
+concurrency:
+  group: workflow03-publication-status
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  publication-status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    outputs:
+      pointer_path: ${{ steps.handoff.outputs.pointer_path }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - name: Install HTTP transport system dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libcurl4-openssl-dev
+
+      - name: Install dependencies
+        shell: Rscript {0}
+        run: |
+          install.packages(c('jsonlite','digest','curl','httr2','readr','googlesheets4'))
+          stopifnot(requireNamespace("curl",quietly=TRUE),
+                    requireNamespace("httr2",quietly=TRUE))
+          cat("PASS W03 HTTP transport dependencies\n")
+
+      - name: Validate first-run provenance
+        env:
+          LEM_FIRST_RUN: ${{ inputs.first_run || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_validate_first_run.R \
+            --stage W03 \
+            --first-run "$LEM_FIRST_RUN"
+
+      - name: Parse Workflow 03 scripts
+        shell: Rscript {0}
+        run: |
+          parse(file='scripts/updater/workflow_03_restore_lean_checkpoint.R')
+          parse(file='scripts/updater/workflow_03_publication_status.R')
+          parse(file='scripts/updater/workflow_03_archive_state_to_zenodo.R')
+          parse(file='scripts/updater/workflow_03_update_zenodo_registry.R')
+          parse(file='scripts/updater/workflow_03_restore_state_from_zenodo.R')
+          cat('PASS: Workflow 03 scripts parse\n')
+
+      - name: Restore Workflow 03 lean canonical checkpoint
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          LEAN_POINTER: ${{ inputs.lean_pointer_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          POINTER="$LEAN_POINTER"
+          RUN_ID="$(POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE);cat(x$source_github_run_id)')"
+          EXPECTED_SHA="$(POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE);cat(x$lean_canonical_sha256)')"
+          CACHE_OK=false
+          rm -rf workflow03_input workflow03_handoff
+          mkdir -p workflow03_handoff
+          if gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "post-w02-lean-canonical-$RUN_ID" --dir workflow03_handoff; then
+            P="$(find workflow03_handoff -type f -name canonical_lean.jsonl -print -quit)"
+            if [ -n "$P" ]; then
+              SHA="$(P="$P" Rscript -e 'library(digest);cat(digest(file=Sys.getenv("P"),algo="sha256",serialize=FALSE))')"
+              if [ "$SHA" = "$EXPECTED_SHA" ]; then
+                mkdir -p workflow03_input
+                cp "$P" workflow03_input/canonical_lean.jsonl
+                CACHE_OK=true
+                echo "PASS: using verified 7-day post-W02 lean handoff artefact"
+              fi
+            fi
+          fi
+          if [ "$CACHE_OK" != true ]; then
+            rm -rf workflow03_input
+            Rscript scripts/updater/workflow_03_restore_lean_checkpoint.R \
+              --pointer "$POINTER" \
+              --output-dir workflow03_input
+            echo "PASS: restored authoritative lean checkpoint from Zenodo"
+          fi
+          SHA="$(Rscript -e 'cat(digest::digest(file="workflow03_input/canonical_lean.jsonl",algo="sha256",serialize=FALSE))')"
+          test "$SHA" = "$EXPECTED_SHA"
+          EXPECTED_RECORDS="$(POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE);n<-as.integer(x$canonical_records);if(is.na(n)||n<1L)stop("Pointer lacks valid canonical_records");cat(n)')"
+          ACTUAL_RECORDS="$(Rscript -e 'x<-readLines("workflow03_input/canonical_lean.jsonl",warn=FALSE);cat(sum(nzchar(trimws(x))))')"
+          test "$ACTUAL_RECORDS" = "$EXPECTED_RECORDS"
+          echo "LEAN_SHA=$SHA" >> "$GITHUB_ENV"
+          echo "EXPECTED_RECORDS=$EXPECTED_RECORDS" >> "$GITHUB_ENV"
+
+      - name: Run publication-status scan
+        env:
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+          LIMIT: ${{ github.event_name == 'push' && '0' || inputs.limit || '0' }}
+          BATCH_SIZE: ${{ inputs.batch_size || '100' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow03
+          Rscript scripts/updater/workflow_03_publication_status.R \
+            --input workflow03_input/canonical_lean.jsonl \
+            --output outputs/workflow03/publication_status.jsonl \
+            --audit outputs/workflow03/api_audit.jsonl \
+            --report outputs/workflow03/report.json \
+            --limit "$LIMIT" \
+            --batch-size "$BATCH_SIZE"
+
+      - name: Validate Workflow 03 output
+        env:
+          LIMIT: ${{ github.event_name == 'push' && '0' || inputs.limit || '0' }}
+        shell: Rscript {0}
+        run: |
+          library(jsonlite)
+          x<-fromJSON('outputs/workflow03/report.json',simplifyVector=FALSE)
+          stopifnot(x$status=='PASS')
+          requested<-as.integer(Sys.getenv('LIMIT'))
+          full_n<-as.integer(Sys.getenv('EXPECTED_RECORDS'))
+          if(requested>0L) stopifnot(as.integer(x$records_scanned)==requested)
+          if(requested==0L) stopifnot(!is.na(full_n),full_n>0L,as.integer(x$records_scanned)==full_n)
+          allowed<-c('normal','retracted','withdrawn','corrected','expression_of_concern','warning')
+          counts<-unlist(x$code_counts)
+          stopifnot(all(names(counts)%in%allowed),sum(as.integer(counts))==as.integer(x$records_scanned))
+          lines<-readLines('outputs/workflow03/publication_status.jsonl',warn=FALSE,encoding='UTF-8')
+          lines<-lines[nzchar(trimws(lines))]
+          stopifnot(length(lines)==as.integer(x$records_scanned))
+          ids<-vapply(lines,function(z)as.character(fromJSON(z,simplifyVector=FALSE)$record_id),character(1))
+          stopifnot(all(nzchar(ids)),!anyDuplicated(ids))
+          if(requested==0L) stopifnot(as.integer(x$evidence_conflicts)==0L)
+          cat('PASS: Workflow 03 output schema/count/record_id validation complete\n')
+
+      - name: Publish authoritative full Workflow 03 layer
+        if: ${{ (github.event_name == 'push' || inputs.publish == true) && (github.event_name == 'push' || inputs.limit == '0') }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow03_zenodo
+          Rscript scripts/updater/workflow_03_archive_state_to_zenodo.R \
+            --state-dir outputs/workflow03 \
+            --source-run-id "$GITHUB_RUN_ID" \
+            --publication-run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output-dir outputs/workflow03_zenodo \
+            --upstream-lean-sha256 "$LEAN_SHA" \
+            --expected-records "$EXPECTED_RECORDS"
+
+      - name: Register authoritative Workflow 03 layer
+        id: handoff
+        if: ${{ (github.event_name == 'push' || inputs.publish == true) && (github.event_name == 'push' || inputs.limit == '0') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
+          Rscript scripts/updater/workflow_03_update_zenodo_registry.R \
+            --receipt outputs/workflow03_zenodo/zenodo_receipt.json \
+            --registry docs/publication_status/zenodo_registry.csv \
+            --pointer-dir docs/publication_status/zenodo
+          POINTER="docs/publication_status/zenodo/run-$GITHUB_RUN_ID.json"
+          git add docs/publication_status/zenodo_registry.csv "$POINTER"
+          if ! git diff --cached --quiet; then
+            git commit -m "Register Workflow 03 publication-status state $GITHUB_RUN_ID"
+            git push origin HEAD:main
+          fi
+          echo "pointer_path=$POINTER" >> "$GITHUB_OUTPUT"
+
+      - name: Update live Shiny progress after published W03
+        if: ${{ (github.event_name == 'push' || inputs.publish == true) && (github.event_name == 'push' || inputs.limit == '0') }}
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+          LEM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
+          LEM_GOOGLE_SHEET_ID: ${{ secrets.LEM_TEST_GOOGLE_SHEET_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Registry commits made with GITHUB_TOKEN do not trigger a second
+          # workflow automatically, so update the current-run status here.
+          git pull --rebase origin main
+          Rscript scripts/updater/workflow_current_run_status_observer.R \
+            --force-stage W03 \
+            --pointer "docs/publication_status/zenodo/run-$GITHUB_RUN_ID.json"
+          printf '%s' "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/lem-google-service-account.json"
+          chmod 600 "$RUNNER_TEMP/lem-google-service-account.json"
+          Rscript scripts/updater/workflow_current_run_status_to_shiny.R \
+            --status docs/current_run/current_run_status.json \
+            --sheet-id "$LEM_GOOGLE_SHEET_ID" \
+            --credential "$RUNNER_TEMP/lem-google-service-account.json"
+          Rscript scripts/reporting/write_workflow09_stage_summary.R --stage W03 --run-id "$GITHUB_RUN_ID"
+          Rscript scripts/reporting/refresh_workflow09_input_manifest.R
+          git add docs/current_run/current_run_status.json docs/reporting/workflow_09_inputs/current
+          if ! git diff --cached --quiet; then
+            git commit -m "Update current-run status through W03 [skip ci]"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
+
+      - name: Upload validated Workflow 03 handoff cache
+        if: ${{ (github.event_name == 'push' || inputs.publish == true) && (github.event_name == 'push' || inputs.limit == '0') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow03-handoff-${{ github.run_id }}
+          path: |
+            workflow03_input/canonical_lean.jsonl
+            outputs/workflow03/publication_status.jsonl
+            outputs/workflow03/report.json
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Trigger Workflow 04 after successful Workflow 03
+        if: ${{ (github.event_name == 'push' || inputs.publish == true) && (github.event_name == 'push' || inputs.limit == '0') && inputs.auto_launch_w04 != false }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS="docs/current_run/current_run_status.json"
+          W03_POINTER="docs/publication_status/zenodo/run-$GITHUB_RUN_ID.json"
+          LEAN_POINTER="${{ inputs.lean_pointer_path }}"
+          test -s "$STATUS"
+          test -s "$W03_POINTER"
+          test -s "$LEAN_POINTER"
+          FIRST_RUN="${{ inputs.first_run || false }}"
+          PREV_W04=""
+          PREV_LEAN=""
+          if [ "$FIRST_RUN" = "false" ]; then
+            PREV_W04="$(Rscript -e 'x<-jsonlite::fromJSON("docs/current_run/current_run_status.json",simplifyVector=FALSE);cat(as.character(x$baseline$workflow04_pointer))')"
+            PREV_LEAN="$(Rscript -e 'x<-jsonlite::fromJSON("docs/current_run/current_run_status.json",simplifyVector=FALSE);cat(as.character(x$baseline$lean_pointer))')"
+            test -n "$PREV_W04"
+            test -s "$PREV_W04"
+            test -n "$PREV_LEAN"
+            test -s "$PREV_LEAN"
+          fi
+          gh workflow run workflow_04_production.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f execution_pathway=github \
+            -f first_run="$FIRST_RUN" \
+            -f lean_pointer_path="$LEAN_POINTER" \
+            -f workflow03_pointer_path="$W03_POINTER" \
+            -f prior_workflow04_pointer_path="$PREV_W04" \
+            -f prior_lean_pointer_path="$PREV_LEAN" \
+            -f manual_decisions_path='' \
+            -f manual_repair_zenodo_record_id='' \
+            -f recovery_pass1_zenodo_record_id='' \
+            -f publish='true'
+          echo "PASS: dispatched Workflow 04 from authoritative W03 run $GITHUB_RUN_ID"
+
+      - name: Upload Workflow 03 execution state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow03-publication-status-${{ github.run_id }}
+          path: |
+            outputs/workflow03/
+            outputs/workflow03_zenodo/
+            workflow03_input/workflow03_restore_audit.json
+          retention-days: 90
+          if-no-files-found: warn

@@ -1,0 +1,57 @@
+name: W02 optional missing-abstract queue
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 'Completed W02 automated enrichment run'
+        required: true
+        type: string
+      google_sheet_id:
+        description: 'Active review Google Sheet ID'
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install dependencies
+        shell: Rscript {0}
+        run: install.packages(c("googlesheets4","jsonlite","digest"))
+      - name: Retrieve exact automated W02 corpus
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "workflow02-abstract-review-source-$SOURCE_RUN_ID" \
+            --dir "$RUNNER_TEMP/w02-abstract-source"
+          test -s "$RUNNER_TEMP/w02-abstract-source/enriched.jsonl"
+      - name: Publish optional missing-abstract review queue
+        env:
+          LEM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
+          LEM_W02_ABSTRACT_QUEUE_ALLOWED: 'YES'
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SHEET_ID: ${{ inputs.google_sheet_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON"
+          printf '%s' "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/lem-google-service-account.json"
+          chmod 600 "$RUNNER_TEMP/lem-google-service-account.json"
+          Rscript scripts/updater/workflow_02_publish_missing_abstract_queue.R \
+            --input "$RUNNER_TEMP/w02-abstract-source/enriched.jsonl" \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --sheet-id "$SHEET_ID" \
+            --credential "$RUNNER_TEMP/lem-google-service-account.json"

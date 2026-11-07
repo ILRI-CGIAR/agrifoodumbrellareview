@@ -9,10 +9,21 @@ arg <- function(flag, default=NULL) {
   args[[i+1L]]
 }
 old_dir <- arg("--old-dir")
+first_run <- tolower(arg("--first-run","false"))
+if(!first_run %in% c("true","false"))stop("--first-run must be true or false",call.=FALSE)
+first_run <- identical(first_run,"true")
 expected_prior <- suppressWarnings(as.integer(arg("--expected-prior-manifestations",NA_character_)))
 output_dir <- arg("--output-dir")
 
 input_manifest_path <- arg("--input-manifest",NULL)
+expected_review_id <- arg("--expected-review-id",NULL)
+expected_sheet_id <- arg("--expected-sheet-id",NULL)
+if (xor(is.null(expected_review_id),is.null(expected_sheet_id)))
+  stop("Both --expected-review-id and --expected-sheet-id are required for review-specific W01 union",call.=FALSE)
+if (!is.null(expected_review_id) && (!nzchar(expected_review_id) || !nzchar(expected_sheet_id)))
+  stop("Review-specific W01 union requires non-empty review and Sheet identities",call.=FALSE)
+if (!is.null(expected_review_id) && is.null(input_manifest_path))
+  stop("Review-specific W01 union requires an authoritative --input-manifest",call.=FALSE)
 input_pos <- which(args == "--input")
 inputs <- if (length(input_pos)) vapply(input_pos,function(i) {
   if (i == length(args)) stop("Missing value after --input",call.=FALSE)
@@ -25,6 +36,15 @@ if (!is.null(input_manifest_path)) {
   if (!identical(im$schema,"living-evidence-map-workflow01-source-inputs-v1")) stop("Unsupported source-input manifest schema",call.=FALSE)
   if (is.null(im$sources) || !length(im$sources) || is.null(names(im$sources))) stop("Source-input manifest contains no sources",call.=FALSE)
   current_paths <- vapply(im$sources,function(z)as.character(z[[1L]]),character(1))
+  if (xor(is.null(im$review_id),is.null(im$google_sheet_id)))
+    stop("Incomplete review-specific routing in W01 source manifest",call.=FALSE)
+  if (!is.null(im$review_id) &&
+      (!nzchar(as.character(im$review_id)) || !nzchar(as.character(im$google_sheet_id))))
+    stop("Empty review identity in W01 source manifest",call.=FALSE)
+  if (!is.null(expected_review_id) &&
+      (!identical(as.character(im$review_id),expected_review_id) ||
+       !identical(as.character(im$google_sheet_id),expected_sheet_id)))
+    stop("Review identity or Google Sheet mismatch at W01 union boundary",call.=FALSE)
 } else if (length(inputs)) {
   if (any(!grepl("^[^=]+=",inputs))) stop("Each --input must be source=path",call.=FALSE)
   source_names <- sub("=.*$","",inputs)
@@ -103,10 +123,11 @@ for (src in names(current_paths)) {
     old_lines <- read_lines_nonempty(hits[[1L]])
     old_ids <- ids_for_lines(old_lines,src)
     if (anyDuplicated(old_ids)) stop(sprintf("Duplicate preserved %s source IDs",src),call.=FALSE)
-  } else if (src %in% legacy_required_sources) {
+  } else if (!first_run && src %in% legacy_required_sources) {
     stop(sprintf("Required preserved source file missing for legacy source %s",src),call.=FALSE)
   }
 
+  if(first_run && length(old_lines)) stop("first_run forbids preserved source state: ",src,call.=FALSE)
   cur_lines <- read_lines_nonempty(current_paths[[src]])
   cur_ids <- ids_for_lines(cur_lines,src)
   if (anyDuplicated(cur_ids)) stop(sprintf("Duplicate current %s source IDs",src),call.=FALSE)
@@ -114,6 +135,11 @@ for (src in names(current_paths)) {
   is_new <- !(cur_ids %in% old_ids)
   append_lines <- cur_lines[is_new]
   append_ids <- cur_ids[is_new]
+  if(first_run && length(append_ids)) {
+    o <- order(append_ids,method="radix")
+    append_lines <- append_lines[o]
+    append_ids <- append_ids[o]
+  }
 
   out_path <- file.path(output_dir,paste0(src,"_records_for_deduplication.jsonl"))
   con <- file(out_path,"wt",encoding="UTF-8")
@@ -148,7 +174,9 @@ union_inputs <- setNames(
 writeLines(toJSON(list(
   schema="living-evidence-map-workflow01-source-inputs-v1",
   status="validated_union",
-  sources=union_inputs
+  sources=union_inputs,
+  review_id=if (exists("im",inherits=FALSE)) im$review_id else NULL,
+  google_sheet_id=if (exists("im",inherits=FALSE)) im$google_sheet_id else NULL
 ),auto_unbox=TRUE,pretty=TRUE,null="null"),
 file.path(output_dir,"source_inputs.json"))
 

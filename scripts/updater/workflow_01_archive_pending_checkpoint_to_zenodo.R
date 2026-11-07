@@ -28,13 +28,15 @@ cm_path <- file.path(checkpoint_dir,"checkpoint_manifest.json")
 if(!file.exists(cm_path)) stop("checkpoint_manifest.json missing",call.=FALSE)
 cm <- fromJSON(cm_path,simplifyVector=FALSE)
 if(!identical(cm$schema,"living-evidence-map-workflow01-pending-checkpoint-v1")) stop("Unsupported checkpoint schema",call.=FALSE)
+if(xor(is.null(cm$review_id),is.null(cm$google_sheet_id)))
+  stop("Checkpoint has incomplete review-specific identity",call.=FALSE)
 
 archive_dir <- file.path(output_dir,"archive_files")
 dir.create(archive_dir,recursive=TRUE,showWarnings=FALSE)
 all_paths <- list.files(checkpoint_dir,recursive=TRUE,full.names=TRUE,all.files=TRUE,no..=TRUE)
 if(length(all_paths)) suppressWarnings(Sys.setFileTime(all_paths,as.POSIXct("2000-01-01",tz="UTC")))
 
-archive_name <- sprintf("agrifoodumbrellareview_workflow01_run-%s_pre-adjudication-checkpoint.tar.gz",run_id)
+archive_name <- sprintf("LivingEvidenceMap_workflow01_run-%s_pre-adjudication-checkpoint.tar.gz",run_id)
 archive_path <- file.path(archive_dir,archive_name)
 old <- setwd(dirname(checkpoint_dir)); on.exit(setwd(old),add=TRUE)
 utils::tar(archive_path,files=basename(checkpoint_dir),compression="gzip",tar="internal")
@@ -49,6 +51,8 @@ manifest <- list(
   github_run_id=as.character(run_id),
   github_run_url=run_url,
   repository=repository,
+  review_id=cm$review_id,
+  google_sheet_id=cm$google_sheet_id,
   previous_workflow01=cm$previous_workflow01,
   workflow00=cm$workflow00,
   new_source_manifestations=cm$new_source_manifestations,
@@ -61,7 +65,7 @@ manifest <- list(
     sha256=digest(file=archive_path,algo="sha256",serialize=FALSE)
   ))
 )
-manifest_name <- sprintf("agrifoodumbrellareview_workflow01_run-%s_pre-adjudication-manifest.json",run_id)
+manifest_name <- sprintf("LivingEvidenceMap_workflow01_run-%s_pre-adjudication-manifest.json",run_id)
 manifest_path <- file.path(archive_dir,manifest_name)
 writeLines(toJSON(manifest,auto_unbox=TRUE,pretty=TRUE,null="null",na="null"),manifest_path,useBytes=TRUE)
 
@@ -84,15 +88,20 @@ metadata <- list(metadata=list(
   publication_date=format(Sys.Date(),"%Y-%m-%d"),
   description=paste0(
     "<p>Compact pre-adjudication checkpoint for Living Evidence Map Workflow 01.</p>",
-    "<p>It stores only the incremental source manifestations, pair decisions, LLM adjudications and locked human-review queue required to resume from Workflow 01 Zenodo record ",
-    cm$previous_workflow01$zenodo_record_id,". It does not duplicate the full corpus.</p>",
+    if(isTRUE(cm$first_run)) {
+      "<p>First-run checkpoint containing the initial source manifestations, pair decisions, LLM adjudications and locked human-review queue.</p>"
+    } else {
+      paste0("<p>Incremental checkpoint for Workflow 01 Zenodo record ",
+             as.character(cm$previous_workflow01$zenodo_record_id),
+             " containing new manifestations, decisions and the locked human-review queue.</p>")
+    },
     "<p>Pending human-review cases: ",cm$pending_human_cases,".</p>"
   ),
   creators=list(list(name="Haddaway, Neal")),
   access_right="restricted",
   access_conditions="Files contain bibliographic metadata and derived deduplication state from database/API sources whose terms may limit redistribution.",
   keywords=list("Living Evidence Map","Workflow 01","deduplication","human review","checkpoint",
-                paste0("agrifoodumbrellareview-workflow01-run-",run_id))
+                paste0("LivingEvidenceMap-workflow01-run-",run_id))
 ))
 
 created <- perform(
@@ -134,9 +143,11 @@ receipt <- list(
   state="pre_adjudication",
   github_run_id=as.character(run_id),
   github_run_url=run_url,
-  previous_github_run_id=as.character(cm$previous_workflow01$github_run_id),
-  previous_zenodo_record_id=as.character(cm$previous_workflow01$zenodo_record_id),
-  previous_manifest_sha256=as.character(cm$previous_workflow01$manifest_sha256),
+  review_id=cm$review_id,
+  google_sheet_id=cm$google_sheet_id,
+  previous_github_run_id=if(isTRUE(cm$first_run)) NULL else as.character(cm$previous_workflow01$github_run_id),
+  previous_zenodo_record_id=if(isTRUE(cm$first_run)) NULL else as.character(cm$previous_workflow01$zenodo_record_id),
+  previous_manifest_sha256=if(isTRUE(cm$first_run)) NULL else as.character(cm$previous_workflow01$manifest_sha256),
   workflow00=cm$workflow00,
   new_source_manifestations=as.integer(cm$new_source_manifestations),
   pending_human_cases=as.integer(cm$pending_human_cases),

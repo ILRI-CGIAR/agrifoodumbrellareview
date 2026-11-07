@@ -1,0 +1,122 @@
+name: Workflow 02 - Batched production candidate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/enrichment/w02_launch_requests/*.json'
+  workflow_dispatch:
+    inputs:
+      first_run:
+        description: Initialise a new review without previous state
+        required: false
+        default: false
+        type: boolean
+      workflow01_pointer_path:
+        description: 'Authoritative Workflow 01 pointer for this update'
+        required: true
+        type: string
+      previous_workflow02_pointer_path:
+        description: 'Latest published Workflow 02 state; empty for first run'
+        required: false
+        default: ''
+        type: string
+      google_sheet_id:
+        description: 'Optional review-specific Google Sheet ID supplied by Shiny'
+        required: false
+        default: ''
+        type: string
+      resume_run_id:
+        description: 'Optional interrupted incremental run ID to resume'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      first_run: ${{ steps.select.outputs.first_run }}
+      pointer: ${{ steps.select.outputs.pointer }}
+      previous: ${{ steps.select.outputs.previous }}
+      resume: ${{ steps.select.outputs.resume }}
+      sheet: ${{ steps.select.outputs.sheet }}
+      pathway: ${{ steps.select.outputs.pathway }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Select W02 inputs
+        id: select
+        env:
+          FIRST_RUN: ${{ inputs.first_run }}
+          POINTER: ${{ inputs.workflow01_pointer_path }}
+          PREVIOUS: ${{ inputs.previous_workflow02_pointer_path }}
+          RESUME: ${{ inputs.resume_run_id }}
+          SHEET: ${{ inputs.google_sheet_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            mapfile -t REQUESTS < <(git diff --name-only HEAD^ HEAD -- docs/enrichment/w02_launch_requests/)
+            test "${#REQUESTS[@]}" -eq 1
+            REQUEST="${REQUESTS[0]}"
+            test -s "$REQUEST"
+            POINTER="$(python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["first_run"] is True and x.get("previous_workflow02_pointer_path","")==""; print(x["workflow01_pointer_path"])' "$REQUEST")"
+            FIRST_RUN=true
+            PREVIOUS=""
+            RESUME=""
+          fi
+          test -s "$POINTER"
+          echo "first_run=$FIRST_RUN" >> "$GITHUB_OUTPUT"
+          echo "pointer=$POINTER" >> "$GITHUB_OUTPUT"
+          echo "previous=$PREVIOUS" >> "$GITHUB_OUTPUT"
+          echo "resume=$RESUME" >> "$GITHUB_OUTPUT"
+          readarray -t META < <(python3 - "$POINTER" <<'PY'
+          import json,sys
+          p=json.load(open(sys.argv[1],encoding="utf-8"))
+          path=p.get("execution_pathway")
+          review=p.get("review_id") or ""
+          sheet=p.get("google_sheet_id") or ""
+          if path is None:
+              path="shiny" if review and sheet else "github"
+          assert path in ("github","shiny"), "Invalid inherited W01 pathway"
+          if path=="shiny":
+              assert review and sheet, "Shiny pathway requires review and Sheet identity"
+          print(path)
+          print(sheet)
+          PY
+          )
+          PATHWAY="${META[0]}"
+          POINTER_SHEET="${META[1]}"
+          if [ "$PATHWAY" = shiny ]; then
+            if [ -n "$SHEET" ] && [ "$SHEET" != "$POINTER_SHEET" ]; then
+              echo "Sheet ID conflicts with authoritative W01 pointer" >&2
+              exit 1
+            fi
+            SHEET="$POINTER_SHEET"
+          fi
+          echo "sheet=$SHEET" >> "$GITHUB_OUTPUT"
+          echo "pathway=$PATHWAY" >> "$GITHUB_OUTPUT"
+  production:
+    needs: resolve
+    uses: ./.github/workflows/workflow_02_batched.yml
+    with:
+      first_run: ${{ fromJSON(needs.resolve.outputs.first_run) }}
+      workflow01_pointer_path: ${{ needs.resolve.outputs.pointer }}
+      google_sheet_id: ${{ needs.resolve.outputs.sheet }}
+      execution_pathway: ${{ needs.resolve.outputs.pathway }}
+      previous_workflow02_pointer_path: ${{ needs.resolve.outputs.previous }}
+      mode: 'incremental'
+      resume_run_id: ${{ needs.resolve.outputs.resume }}
+      batch_size: '250'
+      max_records: '0'
+      recheck_after_days: '90'
+      publish: true
+      use_scopus: false
+      enrich_author_keywords: false
+    secrets: inherit

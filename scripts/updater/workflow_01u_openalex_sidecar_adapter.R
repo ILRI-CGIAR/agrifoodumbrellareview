@@ -125,6 +125,10 @@ on.exit(try(close(con), silent = TRUE), add = TRUE)
 coverage_rows <- list()
 sidecar_ids <- character()
 records_read <- 0L
+unique_records <- 0L
+duplicate_occurrences <- 0L
+seen_records <- new.env(parent=emptyenv(),hash=TRUE)
+duplicate_audit <- list()
 
 for (f in raw_files) {
   x <- fromJSON(f, simplifyVector = FALSE)
@@ -150,7 +154,6 @@ for (f in raw_files) {
 
     if (is.null(oid)) stop(sprintf('Record %d has no OpenAlex work ID', records_read))
     sidecar_id <- paste0('openalex:', oid)
-    sidecar_ids[[records_read]] <- sidecar_id
 
     record <- list(
       sidecar_identity = list(
@@ -192,9 +195,28 @@ for (f in raw_files) {
       )
     )
 
+    # W00 may contain the same OpenAlex work in multiple raw result pages.
+    # Compare mapped bibliographic content rather than provenance timestamps/page names.
+    identity_payload <- record$mapped_fields
+    fingerprint <- digest::digest(identity_payload,algo="sha256")
+    if (exists(sidecar_id,envir=seen_records,inherits=FALSE)) {
+      first <- get(sidecar_id,envir=seen_records,inherits=FALSE)
+      if (!identical(fingerprint,first$fingerprint)) {
+        stop(sprintf("Conflicting OpenAlex metadata for %s: %s versus %s",sidecar_id,first$file,basename(f)),call.=FALSE)
+      }
+      duplicate_occurrences <- duplicate_occurrences + 1L
+      duplicate_audit[[length(duplicate_audit)+1L]] <- list(
+        sidecar_record_id=sidecar_id,first_raw_file=first$file,
+        repeated_raw_file=basename(f),status="identical_mapped_fields"
+      )
+      next
+    }
+    assign(sidecar_id,list(fingerprint=fingerprint,file=basename(f)),envir=seen_records)
+    unique_records <- unique_records + 1L
+    sidecar_ids[[unique_records]] <- sidecar_id
     writeLines(toJSON(record, auto_unbox = TRUE, null = 'null', na = 'null', digits = NA), con)
 
-    coverage_rows[[records_read]] <- data.frame(
+    coverage_rows[[unique_records]] <- data.frame(
       sidecar_record_id = sidecar_id,
       openalex_id = oid,
       doi = doi %||% NA_character_,
@@ -219,7 +241,8 @@ close(con)
 con <- NULL
 
 if (records_read == 0L) stop('OpenAlex sidecar adapter received zero works')
-if (anyDuplicated(sidecar_ids)) stop('Duplicate OpenAlex sidecar_record_id values found')
+if (anyDuplicated(sidecar_ids)) stop('Duplicate OpenAlex sidecar_record_id values remain')
+writeLines(vapply(duplicate_audit,function(x)toJSON(x,auto_unbox=TRUE),character(1)),file.path(output_dir,'duplicate_source_occurrences.jsonl'))
 
 coverage <- do.call(rbind, coverage_rows)
 write.csv(coverage, file.path(output_dir, 'field_coverage_records.csv'), row.names = FALSE, na = '')
@@ -233,7 +256,9 @@ manifest <- list(
   input = list(
     source = 'OpenAlex Works API OQL title/abstract artefact',
     raw_files_n = length(raw_files),
-    records_read = records_read
+    records_read = records_read,
+    unique_records = unique_records,
+    identical_duplicate_occurrences = duplicate_occurrences
   ),
   output = list(
     sidecar_jsonl = 'openalex_sidecar_records.jsonl',
