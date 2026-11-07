@@ -2,7 +2,7 @@ name: Workflow 02 - Batched production candidate
 
 on:
   push:
-    branches: [main]
+    branches: [migration/w00-w03]
     paths:
       - 'docs/enrichment/w02_launch_requests/*.json'
   workflow_dispatch:
