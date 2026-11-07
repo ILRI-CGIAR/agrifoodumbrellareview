@@ -688,10 +688,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          Rscript scripts/updater/workflow_current_run_status_observer.R \
-            --force-stage W02 \
-            --stage-status waiting_human
           if [ "${{ inputs.execution_pathway }}" = "shiny" ]; then
+            Rscript scripts/updater/workflow_current_run_status_observer.R \
+              --force-stage W02 \
+              --stage-status waiting_human
             test -n "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON"
             printf '%s' "$LEM_GOOGLE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/lem-google-service-account.json"
             chmod 600 "$RUNNER_TEMP/lem-google-service-account.json"
@@ -699,12 +699,17 @@ jobs:
               --status docs/current_run/current_run_status.json \
               --sheet-id "$LEM_GOOGLE_SHEET_ID" \
               --credential "$RUNNER_TEMP/lem-google-service-account.json"
+            STATUS_PATH=docs/current_run/current_run_status.json
+          else
+            mkdir -p docs/enrichment/w02_human_review
+            STATUS_PATH="docs/enrichment/w02_human_review/run-$GITHUB_RUN_ID.json"
+            cp outputs/workflow02_human_review/status.json "$STATUS_PATH"
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/current_run/current_run_status.json
+          git add "$STATUS_PATH"
           if ! git diff --cached --quiet; then
-            git commit -m "Mark W02 awaiting human review [skip ci]"
+            git commit -m "Record W02 awaiting human review [skip ci]"
             git pull --rebase origin "$WORKFLOW02_BRANCH"
             git push origin HEAD:"$WORKFLOW02_BRANCH"
           fi
