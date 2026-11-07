@@ -1,6 +1,6 @@
 {
   "schema": "living-evidence-map-workflow01-source-catalogue-v1",
-  "description": "Authoritative source catalogue for Workflow 01 ingestion. Legacy API sources are restored from the accepted Workflow 00 state; manual RIS sources are restored from their published restricted Zenodo records via their registries.",
+  "description": "ILRI source catalogue. Manual RIS sources point to ILRI-specific Zenodo drafts; do not run W01 until the draft-compatible W00 handoff and production orchestration are validated.",
   "sources": {
     "lens": {
       "kind": "workflow00_state",
@@ -29,25 +29,19 @@
     },
     "cab": {
       "kind": "manual_ris",
-      "registry": "user_input/workflow00_ris_cab_abstracts_2026-09-30.json",
+      "registry": "user_input/workflow00_ris_cab_ilri_2026.json",
       "prepared_path": "current_sources/cab/records.jsonl"
     },
     "proquest": {
       "kind": "manual_ris",
-      "registry": "user_input/workflow00_ris_proquest_2026-09-30.json",
+      "registry": "user_input/workflow00_ris_proquest_ilri_2026.json",
       "prepared_path": "current_sources/proquest/records.jsonl"
+    },
+    "lilacs": {
+      "kind": "manual_ris",
+      "registry": "user_input/workflow00_ris_lilacs_ilri_2026.json",
+      "prepared_path": "current_sources/lilacs/records.jsonl"
     }
   },
-  "pending_manual_expansions": {
-    "cab": {
-      "registry": "user_input/workflow00_ris_cab_mariculture_2026-10-18.json",
-      "doi": "10.5281/zenodo.23453888",
-      "status": "awaiting_w00_validation_completion_and_publication"
-    },
-    "proquest": {
-      "registry": "user_input/workflow00_ris_proquest_mariculture_2026-10-18.json",
-      "doi": "10.5281/zenodo.23453910",
-      "status": "awaiting_w00_validation_completion_and_publication"
-    }
-  }
+  "w01_readiness": "blocked_pending_unpublished_draft_handoff_and_validated_w00_inputs"
 }
