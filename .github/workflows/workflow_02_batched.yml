@@ -144,6 +144,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  WORKFLOW01_BRANCH: migration/w00-w03
   WORKFLOW02_BRANCH: migration/w00-w03
 
 jobs:
