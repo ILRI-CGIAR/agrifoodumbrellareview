@@ -1,0 +1,8 @@
+{
+  "first_run": true,
+  "workflow01_pointer_path": "docs/deduplication/zenodo/run-42401289007.json",
+  "previous_workflow02_pointer_path": "",
+  "resume_run_id": "42405126427",
+  "use_scopus": true,
+  "reason": "Reuse all verified W02 batch checkpoints after fixing GitHub-path human-review pause without Shiny status script"
+}
