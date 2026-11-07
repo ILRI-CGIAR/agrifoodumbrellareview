@@ -22,6 +22,7 @@ jobs:
             echo "ARTIFACT $name"
             find "saved/$name" -type f | sort | sed -n '1,65p'
           done
+          echo "ORIGINAL_TECHNICAL_RETRIES $(wc -l < saved/workflow02-batched-final-42405126427/workflow02/retry_queue.jsonl)"
           python3 - <<'PY'
           import json,glob
           for p in glob.glob('saved/**/status.json',recursive=True):
