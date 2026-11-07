@@ -2,7 +2,9 @@ name: W00 EconLit independent scope audit
 on:
   push:
     branches: [migration/w00-w03]
-    paths: ['.github/workflows/econlit_scope_audit.yml']
+    paths:
+      - '.github/workflows/econlit_scope_audit.yml'
+      - 'scripts/updater/econlit_count_probe.R'
   workflow_dispatch:
 permissions:
   contents: read
