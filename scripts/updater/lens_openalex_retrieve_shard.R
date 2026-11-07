@@ -32,7 +32,7 @@ retry_request<-function(req){
 get_lens<-function(q,scroll_id=NULL){
  if(is.null(scroll_id)){
   payload<-list(query=list(bool=list(
-    must=list(list(query_string=list(query=q,fields=c("title","abstract"),default_operator="AND"))),
+    must=list(list(query_string=list(query=q,fields=c("title","abstract","keyword"),default_operator="AND"))),
     filter=list(list(range=list(year_published=list(gte=2015,lte=2026)))),
     must_not=list(list(term=list(publication_type="dataset")))
   )),size=500L,scroll="5m")
@@ -44,7 +44,7 @@ get_lens<-function(q,scroll_id=NULL){
 }
 get_openalex<-function(q,cursor){
  req<-request("https://api.openalex.org/works") |>
-   req_url_query("api_key"=key,"search.title_and_abstract"=q,
+   req_url_query("api_key"=key,"search.title_abstract_keywords"=q,
      filter="from_publication_date:2015-01-01,to_publication_date:2026-12-31,type:!dataset",
      per_page=100,cursor=cursor)
  retry_request(req)
