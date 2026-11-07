@@ -23,7 +23,7 @@ jobs:
         run: install.packages(c('jsonlite','digest'))
       - name: Download original review and patch artifacts
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p saved/review saved/patch saved/final
@@ -59,7 +59,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: w02-reviewed-verified-\${{ github.run_id }}
+          name: w02-reviewed-verified-${{ github.run_id }}
           path: |
             outputs/workflow02/current_patch.jsonl
             outputs/workflow02/enrichment_audit.jsonl
@@ -71,7 +71,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: w02-review-diagnostics-\${{ github.run_id }}
+          name: w02-review-diagnostics-${{ github.run_id }}
           path: outputs/reviewed/
           retention-days: 90
           if-no-files-found: warn
