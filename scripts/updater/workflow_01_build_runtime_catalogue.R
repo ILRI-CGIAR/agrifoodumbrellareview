@@ -62,14 +62,28 @@ if (!is.null(manual_path)) {
     if (!grepl("^[a-z0-9][a-z0-9_-]*$",s) || s %in% src) {
       stop(paste("Invalid or duplicate manual source",s),call.=FALSE)
     }
-    registry <- manual$sources[[s]]$registry
-    if (is.null(registry) || length(registry)!=1L || !nzchar(registry)) {
-      stop(paste("Missing manual RIS registry for",s),call.=FALSE)
+    entry <- manual$sources[[s]]
+    if (identical(entry$kind,"prepared_manual_ris")) {
+      # This source has already passed W00 RIS validation and is restored
+      # byte-for-byte from a run-pinned GitHub artifact, without Zenodo writes.
+      n <- as.integer(entry$expected_records)
+      if(length(n)!=1L || is.na(n) || n<1L)
+        stop(paste("Missing validated W00 manual source count for",s),call.=FALSE)
+      catalogue$sources[[s]] <- list(
+        kind="prepared_manual_ris",expected_records=n,
+        submission_id=as.character(entry$submission_id),
+        prepared_path=file.path(prepared_root,s,"records.jsonl")
+      )
+    } else {
+      registry <- entry$registry
+      if (is.null(registry) || length(registry)!=1L || !nzchar(registry)) {
+        stop(paste("Missing manual RIS registry for",s),call.=FALSE)
+      }
+      catalogue$sources[[s]] <- list(
+        kind="manual_ris",registry=registry,
+        prepared_path=file.path(prepared_root,s,"records.jsonl")
+      )
     }
-    catalogue$sources[[s]] <- list(
-      kind="manual_ris",registry=registry,
-      prepared_path=file.path(prepared_root,s,"records.jsonl")
-    )
   }
 }
 dir.create(dirname(output),recursive=TRUE,showWarnings=FALSE)
