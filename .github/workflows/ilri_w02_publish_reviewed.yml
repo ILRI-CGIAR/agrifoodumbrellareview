@@ -1,0 +1,199 @@
+name: TEMP ILRI W02 publish reviewed checkpoint and dispatch W03
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths: ['.github/workflows/ilri_w02_publish_reviewed.yml']
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: ilri-reviewed-w02-publication
+  cancel-in-progress: false
+env:
+  W01_POINTER: docs/deduplication/zenodo/run-42401289007.json
+  W02_SOURCE_RUN: '42405126427'
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout ILRI migration branch
+        uses: actions/checkout@v4
+        with:
+          ref: migration/w00-w03
+          fetch-depth: 0
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install original W02 archive dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libcurl4-openssl-dev
+          Rscript -e "install.packages(c('jsonlite','digest','curl','httr2'))"
+      - name: Restore immutable successful original batches and validated 100-decision patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p saved/verified saved/final saved/batches outputs/workflow02_state outputs/workflow02
+          gh run download 42417536880 --repo "$GITHUB_REPOSITORY" --name w02-reviewed-verified-42417536880 --dir saved/verified
+          gh run download "$W02_SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --name "workflow02-finalize-input-$W02_SOURCE_RUN" --dir saved/final
+          gh run download "$W02_SOURCE_RUN" --repo "$GITHUB_REPOSITORY" --pattern "workflow02-batch-*-$W02_SOURCE_RUN" --dir saved/batches
+          test -s saved/verified/workflow02/enriched.jsonl
+          test -s saved/verified/workflow02/current_patch.jsonl
+          test -s saved/verified/workflow02/enrichment_audit.jsonl
+          test -s saved/verified/reviewed/reconciliation_report.json
+          test "$(find saved/batches -name enrichment_report.json | wc -l)" -eq 23
+          cp saved/verified/workflow02/{enriched.jsonl,current_patch.jsonl,enrichment_audit.jsonl} outputs/workflow02/
+      - name: Verify 70 accepted and 30 rejected cases against source W01 hash
+        run: |
+          set -euo pipefail
+          Rscript - <<'RS'
+          library(jsonlite);library(digest)
+          v<-fromJSON('saved/verified/reviewed/reconciliation_report.json')
+          stopifnot(identical(v$status,'PASS'),as.integer(v$accepted_conflicts)==70L,
+                    as.integer(v$rejected_conflicts)==30L,as.integer(v$reviewed_conflicts)==100L)
+          p<-fromJSON('docs/deduplication/zenodo/run-42401289007.json')
+          actual<-digest(file='saved/final/workflow01_state/canonical/records.jsonl',algo='sha256',serialize=FALSE)
+          stopifnot(identical(actual,p$canonical_jsonl_sha256),as.integer(p$canonical_records)==21054L)
+          a<-fromJSON('saved/verified/reviewed/remaining/status.json')
+          stopifnot(!isTRUE(a$requires_human_review),as.integer(a$blocking_cases)==0L)
+          cat('PASS: 100 reviewed cases resolved, canonical input checksum verified\n')
+          RS
+      - name: Reconstruct original W02 aggregate report and no-conflict reviewed state
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_02_aggregate_batches.R \
+            --batch-root saved/batches \
+            --plan saved/final/outputs/workflow02_plan/plan.json \
+            --input saved/final/outputs/workflow02/input_with_previous_state.jsonl \
+            --current-patch outputs/workflow02/current_patch.jsonl \
+            --output outputs/workflow02/enrichment_report.json
+          Rscript scripts/updater/workflow_02_inventory_state.R \
+            --input outputs/workflow02/enriched.jsonl \
+            --report outputs/workflow02/final_inventory.json \
+            --missing-both-queue outputs/workflow02/missing_both_queue.jsonl
+          cp outputs/workflow02/current_patch.jsonl outputs/workflow02_state/cumulative_patch.jsonl
+          cp outputs/workflow02/enrichment_audit.jsonl outputs/workflow02_state/enrichment_audit.jsonl
+          cp outputs/workflow02/enrichment_report.json outputs/workflow02_state/enrichment_report.json
+          cp outputs/workflow02/final_inventory.json outputs/workflow02_state/final_inventory.json
+          cp outputs/workflow02/missing_both_queue.jsonl outputs/workflow02_state/missing_both_queue.jsonl
+          cp saved/verified/reviewed/replay_report.json outputs/workflow02_state/cumulative_patch_replay.json
+          cp saved/final/outputs/workflow02_plan/{plan.json,resume_report.json} outputs/workflow02_state/
+          mv outputs/workflow02_state/plan.json outputs/workflow02_state/batch_plan.json
+          cp saved/verified/reviewed/{review_decisions.jsonl,reconciliation_report.json} outputs/workflow02_state/
+          : > outputs/workflow02_state/retry_queue.jsonl
+          Rscript - <<'RS'
+          library(jsonlite);library(digest)
+          p<-fromJSON('docs/deduplication/zenodo/run-42401289007.json')
+          x<-list(schema='living-evidence-map-workflow02-state-manifest-v1',workflow='02',
+                  execution='original_saved_batch_reconciliation',
+                  repairable_fields=c('title','abstract','author_keywords'),
+                  github_run_id=Sys.getenv('GITHUB_RUN_ID'),
+                  workflow01_pointer=Sys.getenv('W01_POINTER'),
+                  workflow01_canonical_sha256=p$canonical_jsonl_sha256,
+                  previous_workflow02_pointer=NULL,
+                  final_enriched_sha256=digest(file='outputs/workflow02/enriched.jsonl',algo='sha256',serialize=FALSE),
+                  reviewed_source_run_id='42405126427',reviewed_conflicts=100L,
+                  reviewed_accepts=70L,reviewed_rejects=30L,
+                  created_at_utc=format(Sys.time(),tz='UTC',format='%Y-%m-%dT%H:%M:%SZ'))
+          writeLines(toJSON(x,auto_unbox=TRUE,pretty=TRUE,null='null'),'outputs/workflow02_state/state_manifest.json')
+          RS
+      - name: Publish reviewed W02 sparse state to restricted Zenodo
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow02_zenodo
+          W01_SHA="$(Rscript -e "x<-jsonlite::fromJSON('docs/deduplication/zenodo/run-42401289007.json');cat(x$canonical_jsonl_sha256)")"
+          Rscript scripts/updater/workflow_02_archive_state_to_zenodo.R \
+            --state-dir outputs/workflow02_state \
+            --run-id "$GITHUB_RUN_ID" --repository "$GITHUB_REPOSITORY" \
+            --output-dir outputs/workflow02_zenodo \
+            --workflow01-canonical-sha256 "$W01_SHA"
+      - name: Register reviewed W02 state in ILRI working branch
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_02_update_zenodo_registry.R \
+            --receipt outputs/workflow02_zenodo/zenodo_receipt.json \
+            --registry docs/enrichment/zenodo_registry.csv \
+            --pointer-dir docs/enrichment/zenodo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/enrichment/zenodo_registry.csv docs/enrichment/zenodo/
+          git commit -m "Register reviewed W02 state with complete audit of 100 decisions"
+          git pull --rebase origin migration/w00-w03
+          git push origin HEAD:migration/w00-w03
+      - name: Compact and archive W02 to W03 lean checkpoint
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/post_w02_lean outputs/lean_checkpoint_zenodo
+          SHA="$(Rscript -e "cat(digest::digest(file='outputs/workflow02/enriched.jsonl',algo='sha256',serialize=FALSE))")"
+          Rscript scripts/updater/workflow_02_compact_post_w02_canonical.R \
+            --input outputs/workflow02/enriched.jsonl \
+            --output outputs/post_w02_lean/canonical_lean.jsonl \
+            --report outputs/post_w02_lean/compaction_report.json \
+            --expected-input-sha256 "$SHA"
+          LEAN_SHA="$(Rscript -e "cat(digest::digest(file='outputs/post_w02_lean/canonical_lean.jsonl',algo='sha256',serialize=FALSE))")"
+          Rscript scripts/updater/workflow_02_archive_lean_checkpoint_to_zenodo.R \
+            --state-dir outputs/post_w02_lean \
+            --run-id "$GITHUB_RUN_ID" --source-run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output-dir outputs/lean_checkpoint_zenodo \
+            --input-canonical-sha256 "$SHA" \
+            --lean-canonical-sha256 "$LEAN_SHA"
+          git pull --rebase origin migration/w00-w03
+          Rscript scripts/updater/workflow_02_update_lean_checkpoint_registry.R \
+            --receipt outputs/lean_checkpoint_zenodo/zenodo_receipt.json \
+            --registry docs/compaction/zenodo_registry.csv \
+            --pointer-dir docs/compaction/zenodo
+          P="docs/compaction/zenodo/run-$GITHUB_RUN_ID.json"
+          test -s "$P"
+          git add docs/compaction/zenodo_registry.csv "$P"
+          git commit -m "Register reviewed W02 to W03 lean handoff"
+          git pull --rebase origin migration/w00-w03
+          git push origin HEAD:migration/w00-w03
+          Rscript scripts/updater/workflow_03_restore_lean_checkpoint.R \
+            --pointer "$P" --output-dir outputs/restored_w03
+          RESTORED="$(Rscript -e "cat(digest::digest(file='outputs/restored_w03/canonical_lean.jsonl',algo='sha256',serialize=FALSE))")"
+          test "$RESTORED" = "$LEAN_SHA"
+          echo "PASS: W02 lean checkpoint restored exactly for W03"
+      - name: Upload reviewed W02 decision and published archive receipts
+        uses: actions/upload-artifact@v4
+        with:
+          name: w02-reviewed-published-${{ github.run_id }}
+          path: |
+            outputs/workflow02_state/review_decisions.jsonl
+            outputs/workflow02_state/reconciliation_report.json
+            outputs/workflow02_state/state_manifest.json
+            outputs/workflow02_state/final_inventory.json
+            outputs/workflow02_zenodo/zenodo_receipt.json
+            outputs/lean_checkpoint_zenodo/zenodo_receipt.json
+          retention-days: 90
+          if-no-files-found: error
+      - name: Dispatch W03 publication status without W04 automatic launch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run workflow_03_production.yml \
+            --repo "$GITHUB_REPOSITORY" --ref migration/w00-w03 \
+            -f first_run='true' -f limit='0' -f batch_size='100' \
+            -f publish='true' -f auto_launch_w04='false' \
+            -f lean_pointer_path="docs/compaction/zenodo/run-$GITHUB_RUN_ID.json"
+          echo "PASS: dispatched original W03 from reviewed W02 lean checkpoint"
+      - name: Retain diagnostics if a gate fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w02-review-publication-diagnostics-${{ github.run_id }}
+          path: |
+            outputs/workflow02_state/
+            outputs/workflow02_zenodo/zenodo_receipt.json
+            outputs/lean_checkpoint_zenodo/zenodo_receipt.json
+          retention-days: 90
+          if-no-files-found: warn
