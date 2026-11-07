@@ -1,0 +1,385 @@
+name: TEMP ILRI W01 finalise retained pairs for W02
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths: ['.github/workflows/ilri_w01_finalize_retained_pairs.yml']
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: workflow01-production
+  cancel-in-progress: false
+env:
+  WORKFLOW01_BRANCH: migration/w00-w03
+  W00_SOURCES: scopus,lens,openalex,agricola,wos
+jobs:
+  finalize-w01:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: migration/w00-w03
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install original W01 dependencies
+        shell: Rscript {0}
+        run: install.packages(c('data.table','jsonlite','digest','httr2','readr','stringdist','stringi','xml2'))
+      - name: Retrieve previously verified W01 and W00 artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p saved-w01 saved-llm inputs/ilri_w00_api inputs/ilri_w00_manual
+          gh run download 42391109116 --repo "$GITHUB_REPOSITORY" --name workflow01-production-42391109116 --dir saved-w01
+          gh run download 42395190539 --repo "$GITHUB_REPOSITORY" --name w01-llm-resume-42391109116-verified --dir saved-llm
+          gh run download 42386416321 --repo "$GITHUB_REPOSITORY" --name ilri-w01-api-source-files --dir inputs/ilri_w00_api
+          gh run download 42385813489 --repo "$GITHUB_REPOSITORY" --name ilri-w01-manual-handoff-not-full-corpus --dir inputs/ilri_w00_manual
+          test -s saved-w01/workflow01_pre_adjudication/combined_pair_decisions.csv
+          test -s saved-llm/merged/all_adjudications.jsonl
+          test -s saved-llm/human_review_package/human_review_cases.jsonl
+          test -s saved-w01/workflow01_union/source_inputs.json
+      - name: Reconstitute original W00 inputs without re-searching or re-scoring
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_00_ilri_restore_validated_artifacts.R \
+            --pointer docs/workflow00/ilri_validated_artifacts_2026-11-07.json \
+            --api-dir inputs/ilri_w00_api \
+            --manual-dir inputs/ilri_w00_manual \
+            --output-root current_workflow00
+      - name: Prepare updated and preserved API source inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          has_source(){ case ",$W00_SOURCES," in *",$1,"*) return 0;; *) return 1;; esac; }
+
+          delta_root() {
+            local source="$1"
+            local p="current_workflow00/$source/source_delta/filtered_source"
+            if [ -d "$p" ]; then printf '%s' "$p"; else printf ''; fi
+          }
+
+          delta_n() {
+            local source="$1"
+            local m="current_workflow00/$source/source_delta/reconciliation_manifest.json"
+            if [ -s "$m" ]; then
+              M="$m" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("M"));cat(as.integer(x$new_native_ids))'
+            else
+              printf ''
+            fi
+          }
+
+          find_handoff_jsonl() {
+            local root="$1"
+            local p=""
+            for candidate in "$root/records.jsonl" "$root/handoff/records.jsonl" "$root/source_child/records.jsonl"; do
+              if [ -f "$candidate" ]; then p="$candidate"; break; fi
+            done
+            if [ -z "$p" ]; then
+              p="$(find "$root" -type f -name 'records.jsonl' -print -quit 2>/dev/null || true)"
+            fi
+            printf '%s' "$p"
+          }
+
+          prepare_direct_source() {
+            local source="$1"
+            local out="current_sources/$source/records.jsonl"
+            mkdir -p "current_sources/$source"
+            local d n p
+            d="$(delta_root "$source")"
+            n="$(delta_n "$source")"
+            if [ -n "$d" ] && [ "$n" = "0" ]; then : > "$out"; return; fi
+            if [ -n "$d" ]; then p="$(find_handoff_jsonl "$d")"; else p="$(find_handoff_jsonl "current_workflow00/$source")"; fi
+            if [ -z "$p" ]; then
+              local code collection
+              case "$source" in
+                pubmed) code=MED; collection=pubmed ;;
+                ethos) code=ETH; collection=ethos ;;
+                cba) code=CBA; collection=cba ;;
+                epmc_preprints) code=PPR; collection=epmc_preprints ;;
+                *) echo "No normalized records.jsonl handoff found for API source $source" >&2; exit 1 ;;
+              esac
+              local raw_root="current_workflow00/$source"
+              if [ -n "$d" ]; then raw_root="$d"; fi
+              Rscript scripts/updater/workflow_01x_europe_pmc_sidecar_adapter.R \
+                --input-dir "$raw_root" \
+                --output-dir "current_sources/$source" \
+                --source-code "$code" \
+                --source-slug "$source" \
+                --source-collection "$collection"
+              p="current_sources/$source/${source}_sidecar_records.jsonl"
+              test -s "$p"
+            fi
+            if [ "$p" != "$out" ]; then mv "$p" "$out"; fi
+          }
+
+          # Existing five API sources retain their established, validated adapters.
+          for source in lens scopus openalex agricola wos; do
+            mkdir -p "current_sources/$source"
+            if has_source "$source"; then
+              D="$(delta_root "$source")"
+              N="$(delta_n "$source")"
+              case "$source" in
+                lens)
+                  if [ -n "$D" ]; then cp "$D/records.jsonl" current_sources/lens/records.jsonl; else P="$(find current_workflow00/lens -path '*/source_child/records.jsonl' -type f -print -quit)"; test -n "$P"; cp "$P" current_sources/lens/records.jsonl; fi
+                  ;;
+                scopus)
+                  if [ -n "$D" ] && [ "$N" = "0" ]; then : > current_sources/scopus/scopus_sidecar_records.jsonl; else if [ -n "$D" ]; then P="$D"; else P="$(find current_workflow00/scopus -type d -name source_child -print -quit)"; fi; test -n "$P"; Rscript scripts/updater/workflow_01s_scopus_sidecar_adapter.R --input-dir "$P" --output-dir current_sources/scopus; fi
+                  ;;
+                openalex)
+                  if [ -n "$D" ] && [ "$N" = "0" ]; then : > current_sources/openalex/openalex_sidecar_records.jsonl; else if [ -n "$D" ]; then P="$D"; else P="$(find current_workflow00/openalex -type d -name source_child -print -quit)"; fi; test -n "$P"; Rscript scripts/updater/workflow_01u_openalex_sidecar_adapter.R --input-dir "$P" --output-dir current_sources/openalex; fi
+                  ;;
+                agricola)
+                  if [ -n "$D" ] && [ "$N" = "0" ]; then : > current_sources/agricola/agricola_sidecar_records.jsonl; else if [ -n "$D" ]; then P="$D"; else P="$(find current_workflow00/agricola -type d -name source_child -print -quit)"; fi; test -n "$P"; Rscript scripts/updater/workflow_01v_agricola_sidecar_adapter.R --input-dir "$P" --output-dir current_sources/agricola; fi
+                  ;;
+                wos)
+                  if [ -n "$D" ] && [ "$N" = "0" ]; then : > current_sources/wos/wos_starter_sidecar_records.jsonl; else if [ -n "$D" ]; then P="$D"; else P="$(find current_workflow00/wos -type d -name source_child -print -quit)"; fi; test -n "$P"; Rscript scripts/updater/workflow_01w_wos_starter_sidecar_adapter.R --input-dir "$P" --output-dir current_sources/wos; fi
+                  ;;
+              esac
+            else
+              case "$source" in
+                lens) dest="records.jsonl" ;;
+                scopus) dest="scopus_sidecar_records.jsonl" ;;
+                openalex) dest="openalex_sidecar_records.jsonl" ;;
+                agricola) dest="agricola_sidecar_records.jsonl" ;;
+                wos) dest="wos_starter_sidecar_records.jsonl" ;;
+              esac
+              cp "previous_state/workflow01_seed/${source}_records_for_deduplication.jsonl" "current_sources/$source/$dest"
+            fi
+          done
+
+          # Additional API sources pass through generically when W00 emits normalized records.jsonl.
+          IFS=',' read -ra API_SOURCES <<< "$W00_SOURCES"
+          for source in "${API_SOURCES[@]}"; do
+            case "$source" in lens|scopus|openalex|agricola|wos) continue;; esac
+            prepare_direct_source "$source"
+          done
+      - name: Build runtime source catalogue and validate source inputs
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          MANUAL_OPTION=()
+          if [ -f user_input/workflow01_manual_sources.json ]; then
+            MANUAL_OPTION=(--manual-config user_input/workflow01_manual_sources.json)
+          fi
+          Rscript scripts/updater/workflow_01_build_runtime_catalogue.R \
+            --w00-sources "$W00_SOURCES" \
+            --w00-status docs/current_run/current_run_status.json \
+            --output outputs/workflow01_runtime_source_catalogue.json \
+            "${MANUAL_OPTION[@]}"
+          Rscript scripts/updater/workflow_01_prepare_source_catalogue.R \
+            --catalogue outputs/workflow01_runtime_source_catalogue.json \
+            --output-manifest outputs/workflow01_source_inputs.json
+      - name: Rebuild the original source union only and verify record identity mapping
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p previous_state/workflow01_seed previous_state/workflow01_full_five_source outputs/workflow01_union
+          printf '{"source_manifestations":0}\n' > previous_state/workflow01_full_five_source/summary.json
+          Rscript scripts/updater/workflow_01_deduplication_build_union.R \
+            --old-dir previous_state/workflow01_seed \
+            --first-run true \
+            --input-manifest outputs/workflow01_source_inputs.json \
+            --expected-prior-manifestations 0 \
+            --output-dir outputs/workflow01_union
+          Rscript - <<'RS'
+          library(jsonlite)
+          library(data.table)
+          original<-fromJSON('saved-w01/workflow01_union/source_inputs.json',simplifyVector=FALSE)
+          recreated<-fromJSON('outputs/workflow01_union/source_inputs.json',simplifyVector=FALSE)
+          stopifnot(identical(names(original$sources),names(recreated$sources)))
+          oldmap<-fread('saved-w01/workflow01_pre_adjudication/manifestation_cluster_map.csv')
+          stopifnot(nrow(oldmap)==46361L,identical(as.integer(oldmap$idx),seq_len(46361L)))
+          ids<-character()
+          srcs<-character()
+          for(src in names(recreated$sources)){
+            path<-file.path('outputs/workflow01_union',paste0(src,'_records_for_deduplication.jsonl'))
+            lines<-readLines(path,warn=FALSE)
+            records<-lapply(lines,fromJSON,simplifyVector=FALSE)
+            id<-vapply(records,function(z){
+              if(identical(src,'lens'))as.character(z$identity$lens_id)
+              else as.character(z$sidecar_identity$sidecar_record_id)
+            },character(1))
+            ids<-c(ids,id);srcs<-c(srcs,rep(src,length(id)))
+          }
+          stopifnot(length(ids)==46361L,!anyDuplicated(paste(srcs,ids)),
+                    identical(as.character(oldmap$source),srcs),
+                    identical(as.character(oldmap$source_record_id),ids))
+          cat('PASS: recreated union matches all 46,361 original immutable source identities and indices\n')
+          RS
+      - name: Restore exact deterministic pair decisions and LLM output
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow01_pre_adjudication outputs/workflow01_candidates \
+                   outputs/workflow01_incremental_rescore outputs/adjudication/merged outputs/adjudication/human_review_package
+          cp saved-w01/workflow01_pre_adjudication/{summary.json,combined_pair_decisions.csv,manifestation_cluster_map.csv} outputs/workflow01_pre_adjudication/
+          cp saved-w01/workflow01_candidates/pathological_abstract_strip_actions.jsonl outputs/workflow01_candidates/
+          cp saved-w01/workflow01_incremental_rescore/{summary.json,rescored_sample.csv} outputs/workflow01_incremental_rescore/
+          cp saved-llm/merged/{all_adjudications.jsonl,human_review.jsonl,summary.json} outputs/adjudication/merged/
+          cp -a saved-llm/human_review_package/. outputs/adjudication/human_review_package/
+      - name: Apply explicit project-wide Covidence retention policy, not individual bibliographic review
+        shell: Rscript {0}
+        run: |
+          library(jsonlite)
+          library(digest)
+          input<-'outputs/adjudication/human_review_package/human_review_cases.jsonl'
+          queue<-readLines(input,warn=FALSE)
+          queue<-queue[nzchar(trimws(queue))]
+          cases<-lapply(queue,fromJSON,simplifyVector=FALSE)
+          ids<-vapply(cases,function(z)as.character(z$review_case_id),character(1))
+          stopifnot(length(ids)==329L,!anyDuplicated(ids))
+          merged<-readLines('outputs/adjudication/merged/all_adjudications.jsonl',warn=FALSE)
+          stopifnot(length(merged)==925L)
+          sha<-digest(file=input,algo='sha256',serialize=FALSE)
+          outdir<-'outputs/human_gate'
+          dir.create(outdir,recursive=TRUE,showWarnings=FALSE)
+          decisions<-file.path(outdir,'policy_decisions.jsonl')
+          rationale<-'Project-wide retention instruction: leave this unresolved pair as separate records for potential removal in Covidence; no individual manual duplicate adjudication was performed.'
+          stamp<-format(Sys.time(),tz='UTC',format='%Y-%m-%dT%H:%M:%SZ')
+          con<-file(decisions,'wt',encoding='UTF-8')
+          for(id in ids) writeLines(toJSON(list(
+            review_case_id=id,queue_sha256=sha,decision='not_duplicate',
+            rationale=rationale,reviewer='project_policy_not_individual_review',
+            resolved_at_utc=stamp,decision_basis='user_directed_covidence_retention',
+            individually_adjudicated=FALSE),auto_unbox=TRUE),con)
+          close(con)
+          file.create(file.path(outdir,'data_quality_repairs.jsonl'))
+          writeLines(toJSON(list(
+             schema='ilri-w01-covidence-retention-policy-v1',
+             source_llm_run_id='42395190539',source_w01_run_id='42391109116',
+             rule='retain unresolved duplicate candidates separately for Covidence',
+             affected_case_count=length(ids),queue_sha256=sha,
+             individually_adjudicated=FALSE,
+             user_directed=TRUE,classification_for_pipeline='not_duplicate',
+             rationale=rationale),auto_unbox=TRUE,pretty=TRUE),
+             file.path(outdir,'covidence_retention_policy.json'))
+          cat(sprintf('PASS: documented user-directed, not individually adjudicated retention of %d cases\n',length(ids)))
+      - name: Validate W01 human-gate contract with explicit project-policy provenance
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_01_validate_human_review_state.R \
+            --queue outputs/adjudication/human_review_package/human_review_cases.jsonl \
+            --decisions outputs/human_gate/policy_decisions.jsonl \
+            --repairs outputs/human_gate/data_quality_repairs.jsonl \
+            --output outputs/human_gate/human_review_integrity.json \
+            --require-complete true
+      - name: Finalise original W01 pair state and canonical records
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/final outputs/canonical
+          Rscript scripts/updater/workflow_01_apply_adjudications_and_recluster.R \
+            --combined-decisions outputs/workflow01_pre_adjudication/combined_pair_decisions.csv \
+            --manifestation-map outputs/workflow01_pre_adjudication/manifestation_cluster_map.csv \
+            --llm-adjudications outputs/adjudication/merged/all_adjudications.jsonl \
+            --human-decisions outputs/human_gate/policy_decisions.jsonl \
+            --human-integrity-manifest outputs/human_gate/human_review_integrity.json \
+            --data-quality-repairs outputs/human_gate/data_quality_repairs.jsonl \
+            --precomputed-strip-actions outputs/workflow01_candidates/pathological_abstract_strip_actions.jsonl \
+            --output-dir outputs/final
+          Rscript - <<'RS'
+          library(jsonlite)
+          p<-'outputs/workflow01_pre_adjudication/summary.json'
+          q<-'outputs/final/summary.json'
+          pre<-fromJSON(p,simplifyVector=FALSE);fin<-fromJSON(q,simplifyVector=FALSE)
+          for(n in c('preserved_pair_decisions','incremental_candidate_rows','incremental_pair_decisions','exact_duplicate_candidate_rows_removed','manual_review_pairs'))
+             if(is.null(fin[[n]]) && !is.null(pre[[n]]))fin[[n]]<-pre[[n]]
+          fin$covidence_retention_policy_cases<-329L
+          fin$covidence_policy_not_individually_adjudicated<-TRUE
+          writeLines(toJSON(fin,auto_unbox=TRUE,pretty=TRUE,null='null'),q)
+          RS
+          mkdir -p previous_state/provenance previous_state/workflow01_full_five_source
+          : > previous_state/provenance/cumulative_data_quality_repairs.jsonl
+          : > previous_state/workflow01_full_five_source/abstract_strip_actions.jsonl
+          mv outputs/final/abstract_strip_actions.jsonl outputs/final/abstract_strip_actions.new.jsonl
+          Rscript scripts/updater/workflow_01_merge_cumulative_repairs.R \
+            --previous-repairs previous_state/provenance/cumulative_data_quality_repairs.jsonl \
+            --new-repairs outputs/human_gate/data_quality_repairs.jsonl \
+            --previous-strips previous_state/workflow01_full_five_source/abstract_strip_actions.jsonl \
+            --new-strips outputs/final/abstract_strip_actions.new.jsonl \
+            --output-repairs outputs/final/cumulative_data_quality_repairs.jsonl \
+            --output-strips outputs/final/abstract_strip_actions.jsonl
+          Rscript scripts/updater/workflow_01_build_canonical_jsonl.R \
+            --cluster-map outputs/final/manifestation_cluster_map.csv \
+            --strip-actions outputs/final/abstract_strip_actions.jsonl \
+            --data-quality-repairs outputs/final/cumulative_data_quality_repairs.jsonl \
+            --repair-audit outputs/canonical/data_quality_repair_application.jsonl \
+            --input-manifest outputs/workflow01_union/source_inputs.json \
+            --run-id "$GITHUB_RUN_ID" \
+            --output outputs/canonical/records.jsonl \
+            --manifest outputs/canonical/canonical_manifest.json
+      - name: Stage complete original W01 baseline and separate Covidence policy audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=outputs/initial_baseline
+          mkdir -p "$ROOT"/{workflow01_seed,workflow01_incremental_rescore,workflow01_full_five_source,adjudication,canonical,reports,provenance}
+          cp outputs/workflow01_union/*_records_for_deduplication.jsonl "$ROOT/workflow01_seed/"
+          cp outputs/workflow01_union/source_inputs.json "$ROOT/workflow01_seed/"
+          cp outputs/workflow01_incremental_rescore/{rescored_sample.csv,summary.json} "$ROOT/workflow01_incremental_rescore/"
+          cp outputs/final/{summary.json,final_pair_decisions.csv,manifestation_cluster_map.csv,abstract_strip_actions.jsonl} "$ROOT/workflow01_full_five_source/"
+          cp outputs/adjudication/merged/all_adjudications.jsonl "$ROOT/adjudication/"
+          cp outputs/canonical/{records.jsonl,canonical_manifest.json} "$ROOT/canonical/"
+          cp outputs/final/cumulative_data_quality_repairs.jsonl "$ROOT/provenance/"
+          cp outputs/human_gate/{policy_decisions.jsonl,covidence_retention_policy.json} "$ROOT/reports/"
+          test -s "$ROOT/canonical/records.jsonl"
+          test -s "$ROOT/reports/covidence_retention_policy.json"
+      - name: Archive original W01 canonical baseline on restricted Zenodo
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$ZENODO_ACCESS_TOKEN"
+          mkdir -p outputs/zenodo
+          Rscript scripts/updater/workflow_01_archive_state_to_zenodo.R \
+            --staging-root outputs/initial_baseline \
+            --run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --state final \
+            --output-dir outputs/zenodo
+      - name: Register authoritative W01 pointer, preserving original pipeline semantics
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_01_update_zenodo_registry.R \
+            --receipt outputs/zenodo/zenodo_receipt.json \
+            --registry docs/deduplication/zenodo_registry.csv \
+            --pointer-dir docs/deduplication/zenodo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/deduplication/zenodo_registry.csv docs/deduplication/zenodo/
+          git commit -m "Register ILRI W01 final canonical baseline, preserving 329 pairs for Covidence"
+          git pull --rebase origin migration/w00-w03
+          git push origin HEAD:migration/w00-w03
+      - name: Retain W01 canonical handoff artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow01-handoff-${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            outputs/canonical/records.jsonl
+            outputs/canonical/canonical_manifest.json
+            outputs/human_gate/covidence_retention_policy.json
+      - name: Upload audit even if finalisation fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ilri-w01-finalization-audit-${{ github.run_id }}
+          retention-days: 90
+          if-no-files-found: warn
+          path: |
+            outputs/final/
+            outputs/canonical/canonical_manifest.json
+            outputs/zenodo/zenodo_receipt.json
+            outputs/human_gate/covidence_retention_policy.json
