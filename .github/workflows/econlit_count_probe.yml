@@ -2,7 +2,9 @@ name: W00 EconLit EBSCO API count validation
 on:
   push:
     branches: [migration/w00-w03]
-    paths: ['.github/workflows/econlit_count_probe.yml']
+    paths:
+      - '.github/workflows/econlit_count_probe.yml'
+      - 'scripts/updater/econlit_count_probe.R'
   workflow_dispatch:
 permissions:
   contents: read
