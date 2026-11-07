@@ -1,0 +1,8 @@
+{
+  "first_run": true,
+  "workflow01_pointer_path": "docs/deduplication/zenodo/run-42401289007.json",
+  "previous_workflow02_pointer_path": "",
+  "source_w01_run_id": "42401289007",
+  "use_scopus": true,
+  "notes": "Original W02 production launcher selects use_scopus=true; source W01 policy retains 329 ambiguous pairs for Covidence."
+}
