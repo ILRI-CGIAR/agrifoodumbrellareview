@@ -84,7 +84,7 @@ jobs:
           f <- 'outputs/adjudication/chunks/chunk-${{ matrix.part }}/adjudications.jsonl'
           m <- fromJSON(paste0(f,'.manifest.json'))
           stopifnot(as.integer(m$source_case_count)==925L,
-                    as.integer(m$processed_cases)==${{ matrix.end - matrix.start + 1 }},
+                    as.integer(m$processed_cases)==as.integer(m$end_row)-as.integer(m$start_row)+1L,
                     as.integer(m$technical_failures)==0L)
           cat('PASS: original W01 adjudication chunk verified\n')
       - uses: actions/upload-artifact@v4
