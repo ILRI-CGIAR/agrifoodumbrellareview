@@ -1,0 +1,219 @@
+name: TEMP ILRI resume original W01 LLM adjudication
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths: ['.github/workflows/ilri_w01_temporary_llm_resume.yml']
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ilri-w01-original-llm-resume-42391109116
+  cancel-in-progress: false
+jobs:
+  adjudicate:
+    name: Original W01 LLM cases ${{ matrix.start }}-${{ matrix.end }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {start: 1, end: 500, part: "001"}
+          - {start: 501, end: 925, part: "002"}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: migration/w00-w03
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::jsonlite
+            any::digest
+            any::httr2
+      - name: Download immutable failed-run W01 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: workflow01-production-42391109116
+          run-id: 42391109116
+          path: saved-w01
+          github-token: ${{ github.token }}
+      - name: Validate and stage source LLM cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t paths < <(find saved-w01 -type f -name cases.jsonl | sort)
+          test "${#paths[@]}" -eq 1
+          mkdir -p outputs/adjudication
+          cp "${paths[0]}" outputs/adjudication/cases.jsonl
+          test -s "${paths[0]}.manifest.json"
+          cp "${paths[0]}.manifest.json" outputs/adjudication/cases.jsonl.manifest.json
+          Rscript - <<'RS'
+          library(jsonlite)
+          library(digest)
+          f <- 'outputs/adjudication/cases.jsonl'
+          m <- fromJSON(paste0(f,'.manifest.json'))
+          n <- length(readLines(f,warn=FALSE))
+          stopifnot(n==925L,as.integer(m$cases)==925L,
+            identical(tolower(as.character(m$output_sha256)),tolower(digest(file=f,algo='sha256',serialize=FALSE))),
+            identical(as.character(m$schema),'living-evidence-map-workflow01-adjudication-input-manifest-v1'))
+          cat(sprintf('PASS: W01 original LLM case manifest verified, %d cases\n',n))
+          RS
+      - name: Run unchanged original W01 LLM adjudicator
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$OPENAI_API_KEY"
+          mkdir -p outputs/adjudication/chunks/chunk-${{ matrix.part }}
+          Rscript scripts/updater/workflow_01_llm_adjudicate_duplicates.R \
+            --input outputs/adjudication/cases.jsonl \
+            --output outputs/adjudication/chunks/chunk-${{ matrix.part }}/adjudications.jsonl \
+            --human-review-output outputs/adjudication/chunks/chunk-${{ matrix.part }}/human_review.jsonl \
+            --model gpt-5.6-luna \
+            --auto-threshold 0.95 \
+            --start-row ${{ matrix.start }} \
+            --end-row ${{ matrix.end }}
+      - name: Verify chunk integrity and require zero API errors
+        shell: Rscript {0}
+        run: |
+          library(jsonlite)
+          f <- 'outputs/adjudication/chunks/chunk-${{ matrix.part }}/adjudications.jsonl'
+          m <- fromJSON(paste0(f,'.manifest.json'))
+          stopifnot(as.integer(m$source_case_count)==925L,
+                    as.integer(m$processed_cases)==${{ matrix.end - matrix.start + 1 }},
+                    as.integer(m$technical_failures)==0L)
+          cat('PASS: original W01 adjudication chunk verified\n')
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: w01-resumed-llm-chunk-${{ matrix.part }}
+          path: outputs/adjudication/chunks/chunk-${{ matrix.part }}/
+          retention-days: 90
+          if-no-files-found: warn
+  verify-and-package:
+    needs: adjudicate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: migration/w00-w03
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::jsonlite
+            any::digest
+            any::httr2
+      - name: Download immutable failed-run W01 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: workflow01-production-42391109116
+          run-id: 42391109116
+          path: saved-w01
+          github-token: ${{ github.token }}
+      - name: Validate and stage source LLM cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t paths < <(find saved-w01 -type f -name cases.jsonl | sort)
+          test "${#paths[@]}" -eq 1
+          mkdir -p outputs/adjudication
+          cp "${paths[0]}" outputs/adjudication/cases.jsonl
+          test -s "${paths[0]}.manifest.json"
+          cp "${paths[0]}.manifest.json" outputs/adjudication/cases.jsonl.manifest.json
+          Rscript - <<'RS'
+          library(jsonlite)
+          library(digest)
+          f <- 'outputs/adjudication/cases.jsonl'
+          m <- fromJSON(paste0(f,'.manifest.json'))
+          n <- length(readLines(f,warn=FALSE))
+          stopifnot(n==925L,as.integer(m$cases)==925L,
+            identical(tolower(as.character(m$output_sha256)),tolower(digest(file=f,algo='sha256',serialize=FALSE))),
+            identical(as.character(m$schema),'living-evidence-map-workflow01-adjudication-input-manifest-v1'))
+          cat(sprintf('PASS: W01 original LLM case manifest verified, %d cases\n',n))
+          RS
+      - name: Download both completed original LLM chunks
+        uses: actions/download-artifact@v4
+        with:
+          pattern: w01-resumed-llm-chunk-*
+          path: outputs/adjudication/chunks
+          merge-multiple: false
+      - name: Restore original chunk directories
+        run: |
+          set -euo pipefail
+          mv outputs/adjudication/chunks/w01-resumed-llm-chunk-001 outputs/adjudication/chunks/chunk-001
+          mv outputs/adjudication/chunks/w01-resumed-llm-chunk-002 outputs/adjudication/chunks/chunk-002
+      - name: Merge and validate LLM adjudication state
+        env:
+          MODEL: gpt-5.6-luna
+          AUTO_THRESHOLD: '0.95'
+        shell: Rscript {0}
+        run: |
+          library(jsonlite)
+          library(digest)
+          lines <- readLines('outputs/adjudication/cases.jsonl',warn=FALSE)
+          lines <- lines[nzchar(trimws(lines))]
+          cases <- lapply(lines,fromJSON,simplifyVector=FALSE)
+          ids <- if(length(cases)) vapply(cases,function(z)z$review_case_id,character(1)) else character()
+          files <- list.files('outputs/adjudication/chunks',pattern='adjudications\\.jsonl$',recursive=TRUE,full.names=TRUE)
+          ml <- if(length(files)) unlist(lapply(files,readLines,warn=FALSE),use.names=FALSE) else character()
+          ml <- ml[nzchar(trimws(ml))]
+          model <- lapply(ml,fromJSON,simplifyVector=FALSE)
+          mids <- if(length(model)) vapply(model,function(z)z$review_case_id,character(1)) else character()
+          stopifnot(length(model)==length(cases),!anyDuplicated(mids),setequal(mids,ids))
+          if(length(model)) model <- model[match(ids,mids)]
+          technical <- sum(vapply(model,function(z)!is.null(z$technical_error),logical(1)))
+          if(technical>0L) stop(sprintf('%d technical LLM failures',technical))
+          human <- Filter(function(z)identical(z$promotion,'human_review'),model)
+          dir.create('outputs/adjudication/merged',recursive=TRUE,showWarnings=FALSE)
+          write_jsonl <- function(xs,p){
+            con<-file(p,'wt',encoding='UTF-8');on.exit(close(con),add=TRUE)
+            if(length(xs)) for(z in xs) writeLines(toJSON(z,auto_unbox=TRUE,null='null',na='null'),con,useBytes=TRUE)
+          }
+          write_jsonl(model,'outputs/adjudication/merged/all_adjudications.jsonl')
+          write_jsonl(human,'outputs/adjudication/merged/human_review.jsonl')
+          s <- list(
+            schema='living-evidence-map-workflow01-llm-adjudication-summary-v1',
+            status=if(length(human))'awaiting_human_review' else 'llm_adjudication_complete',
+            source_workflow01_run_id='42391109116',
+            model=Sys.getenv('MODEL'),
+            auto_threshold=as.numeric(Sys.getenv('AUTO_THRESHOLD')),
+            total_cases=length(model),
+            automatic_duplicate=sum(vapply(model,function(z)identical(z$promotion,'duplicate'),logical(1))),
+            automatic_not_duplicate=sum(vapply(model,function(z)identical(z$promotion,'not_duplicate'),logical(1))),
+            human_review_required=length(human),
+            technical_failures=technical,
+            source_cases_sha256=digest(file='outputs/adjudication/cases.jsonl',algo='sha256',serialize=FALSE),
+            adjudications_sha256=digest(file='outputs/adjudication/merged/all_adjudications.jsonl',algo='sha256',serialize=FALSE)
+          )
+          writeLines(toJSON(s,auto_unbox=TRUE,pretty=TRUE,null='null'),'outputs/adjudication/merged/summary.json')
+          cat(sprintf('PASS: validated %d original W01 adjudications; human review=%d\\n',length(model),length(human)))
+
+
+      - name: Produce original W01 human-review package
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_01_build_human_review_package.R \
+            --input outputs/adjudication/merged/human_review.jsonl \
+            --output-dir outputs/adjudication/human_review_package \
+            --source-run-id 42391109116 \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY"
+      - name: Upload verified resumable LLM output and human-review package
+        uses: actions/upload-artifact@v4
+        with:
+          name: w01-llm-resume-42391109116-verified
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            outputs/adjudication/merged/
+            outputs/adjudication/human_review_package/
+            outputs/adjudication/cases.jsonl.manifest.json
