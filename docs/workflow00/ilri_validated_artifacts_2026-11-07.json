@@ -1,0 +1,54 @@
+{
+  "schema": "ilri-w00-validated-artifacts-v1",
+  "status": "validated",
+  "branch": "migration/w00-w03",
+  "first_run": true,
+  "source_year_min": 2015,
+  "source_count": 8,
+  "expected_total_records": 46361,
+  "api_sources": {
+    "scopus": {
+      "expected_records": 10919
+    },
+    "lens": {
+      "expected_records": 11241
+    },
+    "openalex": {
+      "expected_records": 9105
+    },
+    "agricola": {
+      "expected_records": 192
+    },
+    "wos": {
+      "expected_records": 9338
+    }
+  },
+  "api_artifact": {
+    "run_id": 42386416321,
+    "name": "ilri-w01-api-source-files"
+  },
+  "manual_sources": {
+    "cab": {
+      "expected_records": 4951,
+      "reserved_doi": "10.5281/zenodo.24038271"
+    },
+    "proquest": {
+      "expected_records": 528,
+      "reserved_doi": "10.5281/zenodo.24038186"
+    },
+    "lilacs": {
+      "expected_records": 87,
+      "reserved_doi": "10.5281/zenodo.24038475"
+    }
+  },
+  "manual_artifact": {
+    "run_id": 42385813489,
+    "name": "ilri-w01-manual-handoff-not-full-corpus"
+  },
+  "validation": {
+    "api_restoration_run_id": 42386416321,
+    "manual_w00_validation_run_id": 42385413283,
+    "manual_handoff_run_id": 42385813489
+  },
+  "notes": "No Zenodo publication or downloads from unpublished manual RIS draft required. These are immutable previously validated GitHub artifacts; no claim of published Zenodo archive status."
+}
