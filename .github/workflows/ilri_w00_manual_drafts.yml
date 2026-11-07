@@ -1,0 +1,49 @@
+name: ILRI W00 manual RIS unpublished-draft validation
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - migration/w00-w03
+    paths:
+      - .github/workflows/ilri_w00_manual_drafts.yml
+      - user_input/workflow00_ris_*_ilri_2026.json
+      - scripts/updater/workflow_00_complete_ris_zenodo_draft.R
+      - scripts/updater/workflow_00_ris_ingestion.R
+jobs:
+  validate-drafts:
+    name: W00 ${{ matrix.source }} (keep unpublished)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [proquest, cab, lilacs]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::httr2
+            any::jsonlite
+            any::digest
+      - name: Validate the existing Zenodo draft without writing or publishing
+        env:
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        run: |
+          test -n "$ZENODO_ACCESS_TOKEN" || { echo "::error::ZENODO_ACCESS_TOKEN missing"; exit 1; }
+          Rscript scripts/updater/workflow_00_complete_ris_zenodo_draft.R \
+            --registry "user_input/workflow00_ris_${{ matrix.source }}_ilri_2026.json" \
+            --output-dir "outputs/w00/${{ matrix.source }}" \
+            --validate-only true
+      - name: Archive W00 validation receipts and handoff as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w00-manual-${{ matrix.source }}
+          path: outputs/w00/${{ matrix.source }}/
+          if-no-files-found: warn
+          retention-days: 30
