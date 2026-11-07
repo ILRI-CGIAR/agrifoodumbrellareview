@@ -78,7 +78,12 @@ norm_title <- function(x){
   s <- trimws(gsub("[^a-z0-9]+"," ",s))
   if(!nzchar(s)) NULL else s
 }
+source("scripts/updater/workflow_02_title_review_rules.R",local=TRUE)
 title_similarity <- function(a,b){
+  # Strict full-title agreement is valid only after the caller's exact DOI guard.
+  strict <- w02_title_equivalence(a,b)
+  if(strict %in% c("exact_after_markup_normalisation","complete_title_with_appended_translation"))
+    return(1.0)
   aa <- norm_title(a); bb <- norm_title(b)
   if(is.null(aa)||is.null(bb)) return(NA_real_)
   1 - stringdist(aa,bb,method="jw",p=0.1)
