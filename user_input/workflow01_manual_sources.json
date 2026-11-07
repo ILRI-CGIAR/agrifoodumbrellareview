@@ -1,0 +1,21 @@
+{
+  "schema": "living-evidence-map-workflow01-manual-sources-v1",
+  "description": "Only verified ILRI manual RIS W00 handoffs; original Zenodo deposits remain unpublished",
+  "sources": {
+    "cab": {
+      "kind": "prepared_manual_ris",
+      "submission_id": "w00-42385413283-cab",
+      "expected_records": 4951
+    },
+    "proquest": {
+      "kind": "prepared_manual_ris",
+      "submission_id": "w00-42385413283-proquest",
+      "expected_records": 528
+    },
+    "lilacs": {
+      "kind": "prepared_manual_ris",
+      "submission_id": "w00-42385413283-lilacs",
+      "expected_records": 87
+    }
+  }
+}
