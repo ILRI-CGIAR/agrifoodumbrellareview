@@ -20,11 +20,10 @@ for source, spec in cfg["api_sources"].items():
     matching=[f for f in dep.get("files",[]) if f.get("filename",f.get("key"))==spec["archive"]]
     if len(matching)!=1:raise RuntimeError(f"{source}: missing or duplicate {spec['archive']}")
     entry=matching[0]
-    url=entry.get("links",{}).get("download")
-    if not url:
-        bucket=dep.get("links",{}).get("bucket","")
-        if not bucket:raise RuntimeError(f"{source}: no download URL")
-        url=bucket+"/"+spec["archive"]
+    bucket=dep.get("links",{}).get("bucket","")
+    if not bucket:raise RuntimeError(f"{source}: no authenticated bucket URL")
+    from urllib.parse import quote
+    url=bucket.rstrip("/")+"/"+quote(spec["archive"],safe="")
     req=urllib.request.Request(url,headers={"Authorization":f"Bearer {token}"})
     with urllib.request.urlopen(req,timeout=1800) as response:data=response.read()
     checksum=entry.get("checksum","")
