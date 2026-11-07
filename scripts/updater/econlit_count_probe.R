@@ -76,7 +76,18 @@ fetch <- function(endpoint, params) {
         req_error(is_error=function(x)FALSE) |> req_perform()
       status <- resp_status(r)
       if(status != 200L) stop(sprintf("HTTP %d",status))
-      x <- read_xml(resp_body_raw(r))
+      response_bytes <- resp_body_raw(r)
+      x <- tryCatch(read_xml(response_bytes),error=identity)
+      if(inherits(x,"error")) {
+        body <- rawToChar(response_bytes)
+        declarations <- gregexpr("<?xml",body,fixed=TRUE)[[1L]]
+        hits <- regmatches(body,gregexpr("<Hits>[[:space:]]*[0-9]+[[:space:]]*</Hits>",body,perl=TRUE))[[1L]]
+        message(sprintf("EBSCO malformed-XML diagnostics: bytes=%d, xml_declarations=%d, hit_elements=%d, begins_with_xml=%s, xml_error=%s",
+          length(response_bytes),if(declarations[[1L]]==-1L)0L else length(declarations),
+          if(length(hits)==1L&&identical(hits,""))0L else length(hits),
+          grepl("^[[:space:]]*<\\?xml",body),conditionMessage(x)))
+        stop("EBSCO returned invalid XML; see structural diagnostics")
+      }
       err <- xml_find_first(x,"//*[local-name()='Error' or local-name()='error']")
       if(!inherits(err,"xml_missing")) stop(sprintf("API error: %s",xml_text(err)))
       x
