@@ -123,6 +123,21 @@ for(src in names(expected)) {
         provenance=list(source_archive="ILRI W00 restricted Zenodo archive",
           source_raw_payload_stored_upstream=TRUE))
       provider<-src
+      if(identical(src,"lens")) {
+        # The inherited W01 deduplication reader uses the Lens-specific
+        # identity/canonical structure rather than generic sidecar fields.
+        # Preserve source-native ID without changing matching rules.
+        raw_lens_id<-one(r$raw$lens_id %||% r$source_id)
+        if(is.null(raw_lens_id))stop("Lens source ID missing in raw archive")
+        obj$identity<-list(lens_id=raw_lens_id)
+        obj$canonical<-list(
+          title=title, abstract=abstract, doi=d,
+          authors=z$authors, year=z$year, source=z$journal,
+          volume=r$raw$volume, issue=r$raw$issue,
+          pages=r$raw$start_page,
+          keywords=z$kw, publication_type=z$type
+        )
+      }
     }
     if(is.null(id)||exists(id,envir=ids,inherits=FALSE))stop(sprintf("%s: duplicate/missing ID %s",src,id))
     if(!identical(provider,src))stop(sprintf("%s: mismatched provider %s",src,provider))
