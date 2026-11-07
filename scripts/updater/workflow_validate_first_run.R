@@ -35,7 +35,8 @@ if(stage!="W00") {
   if(!identical(recorded,first)) {
     stop(stage,": first_run disagrees with immutable W00 run provenance",call.=FALSE)
   }
-  if(!identical(as.character(run$branch),"main")) stop(stage,": unexpected execution branch",call.=FALSE)
+  expected_branch <- Sys.getenv("WORKFLOW01_BRANCH","main")
+  if(!identical(as.character(run$branch),expected_branch)) stop(stage,": unexpected execution branch",call.=FALSE)
 }
 if(stage %in% c("W01","W02")) {
  if(first && nzchar(prior)) stop(stage,": first_run=TRUE forbids a previous-review pointer",call.=FALSE)
