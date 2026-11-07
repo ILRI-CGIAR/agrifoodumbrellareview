@@ -141,14 +141,85 @@ count_one <- function(q) {
   if(!length(v))stop("Search response contains no Hits")
   v[[1L]]
 }
+# Large forest/fibre blocks exceed EBSCO's EIT query capacity. Split
+# their OR terms, retrieve accession numbers only, and count their union.
+flatten_or <- function(s) {
+  s <- unwrap(s)
+  terms <- split_top(s,"OR")
+  if(length(terms)>1L) return(unlist(lapply(terms,flatten_or),use.names=FALSE))
+  s
+}
+forestry_terms <- flatten_or(agri[[7L]])
+if(length(forestry_terms)<10L) stop("Unexpected forestry OR component structure")
+extract_ids <- function(doc) {
+  rec <- xml_find_all(doc,"//*[local-name()='rec']")
+  if(!length(rec)) return(character())
+  vapply(rec,function(n) {
+    header <- xml_find_first(n,".//*[local-name()='header']")
+    id <- if(!inherits(header,"xml_missing")) xml_attr(header,"uiTerm") else NA_character_
+    if(is.na(id)||!nzchar(id)) {
+      ui <- xml_find_first(n,".//*[local-name()='ui' and not(@type)]")
+      id <- if(!inherits(ui,"xml_missing")) trimws(xml_text(ui)) else NA_character_
+    }
+    if(is.na(id)||!nzchar(id)) stop("EconLit brief response has no accession identifier")
+    id
+  },character(1))
+}
+count_forestry_exact <- function(i) {
+  term_chunks <- split(forestry_terms,ceiling(seq_along(forestry_terms)/4L))
+  unique_ids <- new.env(hash=TRUE,parent=emptyenv())
+  raw <- 0L
+  for(chunk_index in seq_along(term_chunks)) {
+    chunk <- paste(term_chunks[[chunk_index]],collapse=" OR ")
+    q <- paste0("(",field_block(climate[[i]])," AND ",field_block(review),
+                " AND ",field_block(chunk),") AND (DT 20150101-)")
+    d <- fetch("Search",list(prof=uid,pwd=pwd,authType="profile",
+        db="ecn",query=q,format="brief",startrec="1",numrec="100"))
+    hit_nodes <- xml_find_all(d,"//*[local-name()='Hits']")
+    hits <- suppressWarnings(as.integer(trimws(xml_text(hit_nodes))))
+    hits <- hits[!is.na(hits)]
+    if(length(hits)!=1L) stop("Chunk returned an ambiguous hit count")
+    count <- hits[[1L]]
+    if(count>4880L) stop("A forestry chunk exceeds EIT safe pagination limit")
+    got <- extract_ids(d)
+    if(length(got)>count) stop("More IDs than count from EBSCO")
+    if(count>0L) {
+      while(length(got)<count) {
+        d <- fetch("Search",list(prof=uid,pwd=pwd,authType="profile",
+          db="ecn",query=q,format="brief",
+          startrec=as.character(length(got)+1L),numrec="100"))
+        next_ids <- extract_ids(d)
+        if(!length(next_ids)) stop("Missing EconLit records during chunk pagination")
+        got <- c(got,next_ids)
+      }
+    }
+    if(length(got)!=count||anyDuplicated(got)) stop("Chunk accession count mismatch")
+    for(id in got) assign(id,TRUE,envir=unique_ids)
+    raw <- raw+count
+    cat(sprintf("EconLit forestry %d:7 chunk %d/%d: %d records, %d unique cumulative\\n",
+      i,chunk_index,length(term_chunks),count,length(ls(unique_ids,all.names=TRUE))))
+    Sys.sleep(.2)
+  }
+  list(unique=length(ls(unique_ids,all.names=TRUE)),
+       raw_chunk_occurrences=raw,chunks=length(term_chunks))
+}
 result <- list(database="EconLit",provider="EBSCOhost EIT",date_utc=format(Sys.time(),tz="UTC",format="%Y-%m-%dT%H:%M:%SZ"),status="incomplete",source="user_input/scopus_search_2015_onwards.txt",fields=c("TI","AB"),from_date="2015-01-01",components=list(),error=NULL)
 save <- function()write_json(result,file.path(root,"count_report.json"),pretty=TRUE,auto_unbox=TRUE,null="null")
 save()
 for(k in seq_along(queries)) {
   q <- queries[[k]]
-  n <- tryCatch(count_one(q$query),error=identity)
-  if(inherits(n,"error")) {result$error <- list(component=q$component,message=conditionMessage(n));save();stop(conditionMessage(n))}
-  result$components[[k]] <- list(component=q$component,hits=n,query_sha256=digest(q$query,algo="sha256",serialize=FALSE))
+  parts_index <- as.integer(strsplit(q$component,":",fixed=TRUE)[[1L]])
+  checked <- tryCatch(if(parts_index[[2L]]==7L) count_forestry_exact(parts_index[[1L]]) else
+    list(unique=count_one(q$query),raw_chunk_occurrences=NULL,chunks=1L),error=identity)
+  if(inherits(checked,"error")) {
+    result$error <- list(component=q$component,message=conditionMessage(checked));save()
+    stop(conditionMessage(checked))
+  }
+  n <- as.integer(checked$unique)
+  result$components[[k]] <- list(component=q$component,hits=n,
+    method=if(parts_index[[2L]]==7L)"partitioned_accession_id_union" else "direct_api_count",
+    query_sha256=digest(q$query,algo="sha256",serialize=FALSE),
+    chunk_count=checked$chunks,raw_chunk_occurrences=checked$raw_chunk_occurrences)
   save()
   cat(sprintf("EconLit component %s: %d hits\n",q$component,n))
   Sys.sleep(.3)
