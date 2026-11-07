@@ -1,0 +1,50 @@
+{
+  "status": "published",
+  "workflow": "03",
+  "state": "publication_status",
+  "source_github_run_id": "42418518879",
+  "publication_github_run_id": "42418518879",
+  "source_github_run_url": "https://github.com/ILRI-CGIAR/agrifoodumbrellareview/actions/runs/42418518879",
+  "upstream_lean_canonical_sha256": "7e70f58c7fe1273d6d5bb5e8100587acc7e19503bdd5337aaf8ef9e2d6da6760",
+  "publication_status_sha256": "ba10c6a6a6760aa8711352888cf73d13fb2aae44064a0d10c549b6ba8a9a0b14",
+  "records": 21054,
+  "status_counts": {
+    "retracted": 25,
+    "withdrawn": 0,
+    "expression_of_concern": 0,
+    "warning": 0,
+    "corrected": 65,
+    "normal": 20964
+  },
+  "exclude_from_workflow04": 25,
+  "evidence_conflicts": 0,
+  "multiple_positive_signals": 1,
+  "openalex_lookup": {
+    "found": 19389,
+    "not_found": 748,
+    "unavailable_or_error": 917,
+    "technical_errors": 0
+  },
+  "checked_at": "2026-11-07",
+  "zenodo_record_id": "24044731",
+  "zenodo_deposition_id": "24044731",
+  "doi": "10.5281/zenodo.24044731",
+  "record_url": "https://zenodo.org/records/24044731",
+  "visibility": "restricted",
+  "archive_files": [
+    {
+      "filename": "LivingEvidenceMap_workflow03_run-42418518879_state.tar.gz",
+      "bytes": 704060,
+      "sha256": "062605e22e4387e08653542759527b0b757a9695beb5e5d0d1f8a3b52c57b463",
+      "zenodo_checksum": "md5:991dbd85874f551e4dfcc5fe27bd364f"
+    },
+    {
+      "filename": "LivingEvidenceMap_workflow03_run-42418518879_manifest.json",
+      "bytes": 1268,
+      "sha256": "4bc10500024544ff2fa3b0cce907dacdb01ce14e08df66a615fcdc0322421095",
+      "zenodo_checksum": "md5:91af0e769463db1c599ce5ba9cf1f8a5"
+    }
+  ],
+  "manifest_sha256": "4bc10500024544ff2fa3b0cce907dacdb01ce14e08df66a615fcdc0322421095",
+  "published_at_utc": "2026-11-07T22:06:16Z"
+}
