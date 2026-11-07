@@ -1,0 +1,47 @@
+{
+  "schema": "ilri-w01-source-archives-v1",
+  "description": "ILRI agri-food umbrella review 2015+ source archives. Full W01 requires all eight and must never consume LivingEvidenceMap salmon archives.",
+  "api_sources": {
+    "scopus": {
+      "zenodo_record_id": "24019453",
+      "archive": "scopus_2015_internal_dedup.tar.gz",
+      "expected_records": 10919
+    },
+    "lens": {
+      "zenodo_record_id": "24023958",
+      "archive": "scholarly_2015_dataset_excluded_dedup.tar.gz",
+      "expected_records": 11241
+    },
+    "openalex": {
+      "zenodo_record_id": "24023961",
+      "archive": "scholarly_2015_dataset_excluded_dedup.tar.gz",
+      "expected_records": 9105
+    },
+    "agricola": {
+      "zenodo_record_id": "24023780",
+      "archive": "agricola_europepmc_2015_internal_dedup.tar.gz",
+      "expected_records": 192
+    },
+    "wos": {
+      "zenodo_record_id": "24023386",
+      "archive": "wos_2015_internal_dedup.tar.gz",
+      "expected_records": 9338
+    }
+  },
+  "manual_sources": {
+    "cab": {
+      "w00_run_id": 42385413283,
+      "expected_records": 4951
+    },
+    "proquest": {
+      "w00_run_id": 42385413283,
+      "expected_records": 528
+    },
+    "lilacs": {
+      "w00_run_id": 42385413283,
+      "expected_records": 87
+    }
+  },
+  "fao_agris": "excluded",
+  "note": "EconLit retrieval status remains separately under audit; archive restoration needs verified sidecar compatibility before full W01 deduplication."
+}
