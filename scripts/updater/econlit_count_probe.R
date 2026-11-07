@@ -143,6 +143,7 @@ count_one <- function(q) {
 }
 # Diagnostic mode: independent sensitivity checks, no harvest.
 if("--audit" %in% commandArgs(trailingOnly=TRUE)) {
+  message(sprintf("EconLit live search tags: %s",paste(fields,collapse=",")))
   examples <- list(
     simple_three_concepts="(\"climate change\" AND \"systematic review\" AND agriculture)",
     fielded_three_concepts='((TI "climate change" OR AB "climate change") AND (TI "systematic review" OR AB "systematic review") AND (TI agriculture OR AB agriculture))',
