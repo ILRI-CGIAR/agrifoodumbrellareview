@@ -149,8 +149,7 @@ flatten_or <- function(s) {
   if(length(terms)>1L) return(unlist(lapply(terms,flatten_or),use.names=FALSE))
   s
 }
-forestry_terms <- flatten_or(agri[[7L]])
-if(length(forestry_terms)<10L) stop("Unexpected forestry OR component structure")
+
 extract_ids <- function(doc) {
   rec <- xml_find_all(doc,"//*[local-name()='rec']")
   if(!length(rec)) return(character())
@@ -165,8 +164,10 @@ extract_ids <- function(doc) {
     id
   },character(1))
 }
-count_forestry_exact <- function(i) {
-  term_chunks <- split(forestry_terms,ceiling(seq_along(forestry_terms)/4L))
+count_component_exact <- function(i,j) {
+  terms <- flatten_or(agri[[j]])
+  if(length(terms)<2L) stop("Cannot partition component into OR terms")
+  term_chunks <- split(terms,ceiling(seq_along(terms)/4L))
   unique_ids <- new.env(hash=TRUE,parent=emptyenv())
   raw <- 0L
   for(chunk_index in seq_along(term_chunks)) {
@@ -181,8 +182,8 @@ count_forestry_exact <- function(i) {
     if(!length(hits)||any(hits != hits[[1L]])) {
       root_node <- xml_root(d)
       tags <- head(unique(xml_name(xml_find_all(d,"//*"))),15L)
-      message(sprintf("EconLit chunk %d:7/%d invalid hit count: root=%s, tags=%s, query_length=%d, values=%s",
-        i,chunk_index,xml_name(root_node),paste(tags,collapse=","),nchar(q),
+      message(sprintf("EconLit chunk %d:%d/%d invalid hit count: root=%s, tags=%s, query_length=%d, values=%s",
+        i,j,chunk_index,xml_name(root_node),paste(tags,collapse=","),nchar(q),
         paste(hits,collapse=",")))
       stop("Chunk returned an ambiguous hit count")
     }
@@ -203,8 +204,8 @@ count_forestry_exact <- function(i) {
     if(length(got)!=count||anyDuplicated(got)) stop("Chunk accession count mismatch")
     for(id in got) assign(id,TRUE,envir=unique_ids)
     raw <- raw+count
-    cat(sprintf("EconLit forestry %d:7 chunk %d/%d: %d records, %d unique cumulative\\n",
-      i,chunk_index,length(term_chunks),count,length(ls(unique_ids,all.names=TRUE))))
+    cat(sprintf("EconLit component %d:%d chunk %d/%d: %d records, %d unique cumulative\n",
+      i,j,chunk_index,length(term_chunks),count,length(ls(unique_ids,all.names=TRUE))))
     Sys.sleep(.2)
   }
   list(unique=length(ls(unique_ids,all.names=TRUE)),
@@ -216,15 +217,23 @@ save()
 for(k in seq_along(queries)) {
   q <- queries[[k]]
   parts_index <- as.integer(strsplit(q$component,":",fixed=TRUE)[[1L]])
-  checked <- tryCatch(if(parts_index[[2L]]==7L) count_forestry_exact(parts_index[[1L]]) else
-    list(unique=count_one(q$query),raw_chunk_occurrences=NULL,chunks=1L),error=identity)
+  checked <- tryCatch({
+    i <- parts_index[[1L]]; j <- parts_index[[2L]]
+    if(j==7L) count_component_exact(i,j) else {
+      direct <- tryCatch(count_one(q$query),error=identity)
+      if(inherits(direct,"error")) {
+        message(sprintf("EconLit %d:%d direct request failed; trying exact accession-ID chunking: %s",i,j,conditionMessage(direct)))
+        count_component_exact(i,j)
+      } else list(unique=direct,raw_chunk_occurrences=NULL,chunks=1L)
+    }
+  },error=identity)
   if(inherits(checked,"error")) {
     result$error <- list(component=q$component,message=conditionMessage(checked));save()
     stop(conditionMessage(checked))
   }
   n <- as.integer(checked$unique)
   result$components[[k]] <- list(component=q$component,hits=n,
-    method=if(parts_index[[2L]]==7L)"partitioned_accession_id_union" else "direct_api_count",
+    method=if(checked$chunks>1L)"partitioned_accession_id_union" else "direct_api_count",
     query_sha256=digest(q$query,algo="sha256",serialize=FALSE),
     chunk_count=checked$chunks,raw_chunk_occurrences=checked$raw_chunk_occurrences)
   save()
