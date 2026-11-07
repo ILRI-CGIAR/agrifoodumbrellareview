@@ -141,6 +141,35 @@ count_one <- function(q) {
   if(!length(v))stop("Search response contains no Hits")
   v[[1L]]
 }
+# Diagnostic mode: independent sensitivity checks, no harvest.
+if("--audit" %in% commandArgs(trailingOnly=TRUE)) {
+  examples <- list(
+    simple_three_concepts="(\"climate change\" AND \"systematic review\" AND agriculture)",
+    fielded_three_concepts='((TI "climate change" OR AB "climate change") AND (TI "systematic review" OR AB "systematic review") AND (TI agriculture OR AB agriculture))',
+    broad_evidence_agriculture='("systematic review" AND agriculture)',
+    fielded_evidence_agriculture='((TI "systematic review" OR AB "systematic review") AND (TI agriculture OR AB agriculture))',
+    broad_climate_agriculture='("climate change" AND agriculture)',
+    fielded_climate_agriculture='((TI "climate change" OR AB "climate change") AND (TI agriculture OR AB agriculture))',
+    target_component_1_1=query_for(1L,1L)
+  )
+  out <- list(database="EconLit",source="audit",checks=list())
+  for(name in names(examples)) {
+    q <- examples[[name]]
+    dated <- grepl("DT 20150101-",q,fixed=TRUE)
+    queries_to_run <- if(dated) list(dated=q) else list(all_years=q,from_2015=paste0("(",q,") AND (DT 20150101-)"))
+    for(suffix in names(queries_to_run)) {
+      x <- tryCatch(count_one(queries_to_run[[suffix]]),error=identity)
+      out$checks[[length(out$checks)+1L]] <- list(name=paste(name,suffix,sep="_"),
+         hits=if(inherits(x,"error")) NULL else x,
+         error=if(inherits(x,"error"))conditionMessage(x) else NULL,
+         query=queries_to_run[[suffix]])
+      cat(sprintf("AUDIT %-45s %s\\n",paste(name,suffix,sep="_"),
+        if(inherits(x,"error"))paste0("ERROR ",conditionMessage(x)) else as.character(x)))
+    }
+  }
+  write_json(out,file.path(root,"sensitivity_audit.json"),pretty=TRUE,auto_unbox=TRUE,null="null")
+  quit(status=if(any(vapply(out$checks,function(x)!is.null(x$error),logical(1))))1L else 0L)
+}
 # Large forest/fibre blocks exceed EBSCO's EIT query capacity. Split
 # their OR terms, retrieve accession numbers only, and count their union.
 flatten_or <- function(s) {
