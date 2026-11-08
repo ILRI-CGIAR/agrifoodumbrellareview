@@ -1579,7 +1579,7 @@ jobs:
             --message "Workflow 01 duplicate adjudication paused for human review."
 
       - name: Mark legacy Workflow 01 awaiting human review
-        if: ${{ steps.adjudication.outputs.pending_count != '0' && inputs.review_id == '' }}
+        if: ${{ steps.adjudication.outputs.pending_count != '0' && inputs.review_id == '' && inputs.execution_pathway == 'shiny' }}
         env:
           LEM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
           LEM_GOOGLE_SHEET_ID: ${{ secrets.LEM_TEST_GOOGLE_SHEET_ID }}
@@ -1605,7 +1605,7 @@ jobs:
           fi
 
       - name: Build Workflow 01 review notification email
-        if: ${{ steps.adjudication.outputs.pending_count != '0' }}
+        if: ${{ steps.adjudication.outputs.pending_count != '0' && inputs.execution_pathway == 'shiny' }}
         env:
           REVIEW_EMAIL: ${{ secrets.REVIEW_EMAIL }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
@@ -1620,7 +1620,7 @@ jobs:
             --output outputs/adjudication/human_review_package/email_payload.json
 
       - name: Email Workflow 01 review notification
-        if: ${{ steps.adjudication.outputs.pending_count != '0' }}
+        if: ${{ steps.adjudication.outputs.pending_count != '0' && inputs.execution_pathway == 'shiny' }}
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -1824,7 +1824,7 @@ jobs:
           fi
 
       - name: Update current-run live status through W01
-        if: ${{ steps.adjudication.outputs.pending_count == '0' }}
+        if: ${{ steps.adjudication.outputs.pending_count == '0' && inputs.execution_pathway == 'shiny' }}
         env:
           ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
           LEM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
