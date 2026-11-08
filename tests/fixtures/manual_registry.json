@@ -1,0 +1,33 @@
+{
+  "schema_version": "workflow00-source-registry-v1",
+  "acquisition": {
+    "method": "ris_upload",
+    "source_format": "RIS"
+  },
+  "database": {
+    "name": "Fixture Research Database",
+    "short_name": "fixture_db",
+    "platform": "Synthetic"
+  },
+  "search": {
+    "description": "Synthetic test search",
+    "reported_results": 2,
+    "search_date": "2026-01-02",
+    "search_fields": [
+      "title",
+      "abstract"
+    ]
+  },
+  "field_semantics": {
+    "ris_KW": "author_keywords"
+  },
+  "input": {
+    "files": [
+      {
+        "filename": "synthetic_records.ris"
+      }
+    ],
+    "encoding": "UTF-8",
+    "expected_chunk_count": 1
+  }
+}
