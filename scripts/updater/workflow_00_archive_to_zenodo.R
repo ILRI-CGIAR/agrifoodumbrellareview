@@ -19,6 +19,9 @@ staging_root <- normalizePath(arg("--staging-root"),mustWork=TRUE)
 run_id <- arg("--run-id")
 run_type <- arg("--run-type")
 search_version <- arg("--search-version")
+project_id <- arg("--project-id")
+if(is.null(project_id)||!grepl("^[a-z][a-z0-9_-]{2,63}$",project_id))
+  stop("An explicit stable project ID is required",call.=FALSE)
 sources <- strsplit(arg("--sources",""),",",fixed=TRUE)[[1L]]
 sources <- sources[nzchar(sources)]
 repository <- arg("--repository")
@@ -113,10 +116,12 @@ names(file_meta) <- basename(archive_paths)
 
 manifest <- list(
   schema="living-evidence-map-workflow00-search-archive-v1",
+  project_id=project_id,
   github_run_id=run_id,
   github_run_url=run_url,
   repository=repository,
   archive_prefix=archive_prefix,
+  project_id=project_id,
   run_type=run_type,
   search_version=search_version,
   sources=sources,
@@ -150,8 +155,8 @@ perform <- function(req, expected, label, timeout = 600) {
   resp
 }
 
-expected_title <- sprintf("%s | Search archive | %s | run %s",
-  project_title,run_type,run_id)
+expected_title <- sprintf("%s | %s | Search archive | %s | run %s",
+  project_title,project_id,run_type,run_id)
 
 description <- paste0(
   "<p>Source search archive for a reproducible evidence-synthesis project.</p>",
@@ -189,7 +194,7 @@ metadata <- list(metadata = list(
 ))
 
 if(validate_only){
-  writeLines(toJSON(list(status="validated_not_published",sources=sources,
+  writeLines(toJSON(list(status="validated_not_published",project_id=project_id,sources=sources,
     archive_prefix=archive_prefix,files=file_meta,manifest_sha256=digest(file=manifest_path,algo="sha256",serialize=FALSE)),
     auto_unbox=TRUE,pretty=TRUE,null="null"),
     file.path(output_dir,"offline_validation.json"))
