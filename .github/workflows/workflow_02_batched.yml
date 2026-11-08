@@ -144,8 +144,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  WORKFLOW01_BRANCH: migration/w00-w03
-  WORKFLOW02_BRANCH: migration/w00-w03
+  WORKFLOW01_BRANCH: ${{ github.ref_name }}
+  WORKFLOW02_BRANCH: ${{ github.ref_name }}
 
 jobs:
   prepare:
@@ -778,8 +778,8 @@ jobs:
             git push origin HEAD:"$WORKFLOW02_BRANCH"
           fi
 
-      - name: Update current-run live status through W02
-        if: ${{ steps.human_review.outputs.pause_required != 'true' && inputs.publish == true }}
+      - name: Update Shiny status through W02 (Shiny execution only)
+        if: ${{ steps.human_review.outputs.pause_required != 'true' && inputs.publish == true && inputs.execution_pathway == 'shiny' }}
         env:
           ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
           LEM_GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.LEM_GOOGLE_SERVICE_ACCOUNT_JSON }}
