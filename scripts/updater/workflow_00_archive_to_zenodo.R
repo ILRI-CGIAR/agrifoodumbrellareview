@@ -116,7 +116,6 @@ names(file_meta) <- basename(archive_paths)
 
 manifest <- list(
   schema="living-evidence-map-workflow00-search-archive-v1",
-  project_id=project_id,
   github_run_id=run_id,
   github_run_url=run_url,
   repository=repository,
@@ -279,6 +278,7 @@ receipt <- list(
   github_run_id=run_id,
   github_run_url=run_url,
   archive_prefix=archive_prefix,
+  project_id=project_id,
   run_type=run_type,
   search_version=search_version,
   sources=sources,
