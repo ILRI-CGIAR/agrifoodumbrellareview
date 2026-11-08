@@ -34,7 +34,7 @@ jobs:
           def save(fn,obj):
             dest=p(fn);dest.parent.mkdir(parents=True,exist_ok=True)
             dest.write_text(json.dumps(obj,ensure_ascii=False,indent=2)+'\n')
-          strategy={"schema":"evidence-search-strategy-v1","search_version":"synth-1","sources":{
+          strategy={"schema":"evidence-search-strategy-v1","project_id":"synthetic-review","search_version":"synth-1","sources":{
             "scopus":{"database_name":"Scopus","platform":"Scopus API","search_fields":["title","abstract","keywords"],
               "queries":{"full":{"query":"TITLE-ABS-KEY(test)"}, "monthly":{"query":"TITLE-ABS-KEY(test) AND ORIG-LOAD-DATE AFT 20261001",
                   "filter":{"index_after":"2026-10-01"},"window":{"from":"2026-10-01","to":"2026-11-01"}}}},
@@ -109,7 +109,7 @@ jobs:
             --output outputs/workflow00/plan/source_search_report.json
           Rscript scripts/updater/workflow_00_archive_to_zenodo.R --validate-only true \
             --staging-root outputs/workflow00 --run-id 111111 --run-type full \
-            --repository example/evidence --search-version synth-1 \
+            --repository example/evidence --search-version synth-1 --project-id synthetic-review \
             --sources scopus,manual_example --zenodo-config outputs/fixture_zenodo.json \
             --output-dir outputs/archive
           mkdir -p current_sources/scopus current_sources/manual_example
@@ -128,7 +128,7 @@ jobs:
           b <- fromJSON("outputs/workflow00/harvests/manual_example/native_id_reconciliation/reconciliation_manifest.json")
           x <- fromJSON("outputs/workflow00/plan/source_search_report.json")
           m <- fromJSON("outputs/w01_source_inputs.json")
-          stopifnot(a$new_native_ids==2,b$new_native_ids==2,
+          stopifnot(x$project_id=="synthetic-review",a$new_native_ids==2,b$new_native_ids==2,
             x$source_count==2,x$downloaded_manifestations==5,
             m$status=="validated",length(m$sources)==2)
           cat("PASS: first run 2 databases, exact native IDs, 5 raw/4 unique, W01-compatible handoff\n")
