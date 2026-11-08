@@ -146,6 +146,7 @@ dir.create(dirname(output_path),recursive=TRUE,showWarnings=FALSE)
 dir.create(dirname(audit_path),recursive=TRUE,showWarnings=FALSE)
 outcon<-file(output_path,"wt",encoding="UTF-8");on.exit(close(outcon),add=TRUE)
 counts<-setNames(integer(length(precedence)),names(precedence)); conflicts<-0L; multiple_signals<-0L; excluded<-0L; found<-0L; notfound<-0L; unavailable<-0L; technical_lookup_errors<-0L
+excluded_records<-list()
 
 for(i in seq_along(meta)){
   z<-meta[[i]]
@@ -175,7 +176,15 @@ for(i in seq_along(meta)){
   if(isTRUE(res$conflict))conflicts<-conflicts+1L
   if(isTRUE(res$multiple_positive_signals))multiple_signals<-multiple_signals+1L
   excl<-code%in%c("retracted","withdrawn")
-  if(excl)excluded<-excluded+1L
+  if(excl){
+    excluded<-excluded+1L
+    excluded_records[[length(excluded_records)+1L]]<-list(
+      record_id=z$record_id,
+      doi=z$doi,
+      publication_status=code,
+      basis=if(isTRUE(oa$is_retracted)) "openalex_retracted" else if(isTRUE(tm$matched)) "title_notice" else "other_publication_status_signal"
+    )
+  }
 
   state<-list(
     record_id=z$record_id,
@@ -210,6 +219,7 @@ report<-list(
   full_input_requested=limit==0L,
   code_counts=as.list(counts),
   exclude_from_workflow04=excluded,
+  excluded_records=excluded_records,
   evidence_conflicts=conflicts,
   multiple_positive_signals=multiple_signals,
   openalex_lookup=list(found=found,not_found=notfound,unavailable_or_error=unavailable,technical_errors=technical_lookup_errors),
