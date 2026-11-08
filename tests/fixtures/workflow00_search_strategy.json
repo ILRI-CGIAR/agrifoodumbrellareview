@@ -1,0 +1,60 @@
+{
+  "schema": "evidence-search-strategy-v1",
+  "search_version": "test-001",
+  "sources": {
+    "scopus": {
+      "database_name": "Scopus",
+      "platform": "Scopus API",
+      "search_fields": [
+        "title",
+        "abstract",
+        "keywords"
+      ],
+      "queries": {
+        "full": {
+          "query": "TITLE-ABS-KEY(\"synthetic term\")",
+          "filter": {
+            "publication_year_from": 2015
+          }
+        },
+        "monthly": {
+          "query": "TITLE-ABS-KEY(\"synthetic term\") AND ORIG-LOAD-DATE AFT 20260101",
+          "filter": {
+            "index_date_after": "2026-01-01"
+          },
+          "window": {
+            "from": "2026-01-01",
+            "to": "2026-02-01"
+          }
+        }
+      }
+    },
+    "wos": {
+      "database_name": "Web of Science Core Collection",
+      "platform": "Web of Science API",
+      "search_fields": [
+        "title",
+        "abstract",
+        "author_keywords"
+      ],
+      "queries": {
+        "full": {
+          "query": "TI=(\"synthetic term\") OR AB=(\"synthetic term\") OR AK=(\"synthetic term\")"
+        },
+        "monthly": {
+          "query": "TI=(\"synthetic term\") OR AB=(\"synthetic term\") OR AK=(\"synthetic term\")",
+          "filter": {
+            "modifiedTimeSpan": {
+              "from": "2026-01-01",
+              "to": "2026-02-01"
+            }
+          },
+          "window": {
+            "from": "2026-01-01",
+            "to": "2026-02-01"
+          }
+        }
+      }
+    }
+  }
+}
