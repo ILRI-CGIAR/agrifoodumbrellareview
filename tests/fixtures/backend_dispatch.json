@@ -1,0 +1,151 @@
+{
+  "schema": "evidence-search-strategy-v1",
+  "search_version": "backend-dryrun-v1",
+  "sources": {
+    "scopus": {
+      "backend": "scopus",
+      "database_name": "Scopus",
+      "platform": "Scopus API",
+      "search_fields": [
+        "title",
+        "abstract",
+        "keywords"
+      ],
+      "queries": {
+        "full": {
+          "query": "TITLE-ABS-KEY(synthetic)"
+        }
+      }
+    },
+    "openalex": {
+      "backend": "openalex",
+      "database_name": "OpenAlex",
+      "platform": "OpenAlex API",
+      "search_fields": [
+        "title",
+        "abstract"
+      ],
+      "queries": {
+        "full": {
+          "query": "synthetic"
+        }
+      }
+    },
+    "agricola": {
+      "backend": "agricola",
+      "database_name": "AGRICOLA",
+      "platform": "Europe PMC",
+      "search_fields": [
+        "title",
+        "abstract"
+      ],
+      "queries": {
+        "full": {
+          "query": "SRC:AGR AND TITLE_ABS:synthetic"
+        }
+      }
+    },
+    "wos": {
+      "backend": "wos",
+      "database_name": "Web of Science",
+      "platform": "WoS Starter",
+      "search_fields": [
+        "title",
+        "abstract",
+        "keywords"
+      ],
+      "queries": {
+        "full": {
+          "query": "TI=(synthetic)"
+        }
+      }
+    },
+    "pubmed": {
+      "backend": "europe_pmc",
+      "database_name": "PubMed",
+      "platform": "Europe PMC",
+      "search_fields": [
+        "title",
+        "abstract"
+      ],
+      "options": {
+        "europe_pmc_source_code": "MED",
+        "collection": "PubMed"
+      },
+      "queries": {
+        "full": {
+          "query": "SRC:MED AND TITLE_ABS:synthetic"
+        }
+      }
+    },
+    "ebsco_medline": {
+      "backend": "ebsco",
+      "database_name": "MEDLINE",
+      "platform": "EBSCO",
+      "search_fields": [
+        "TI",
+        "AB"
+      ],
+      "queries": {
+        "full": {
+          "query": "TI (synthetic) OR AB (synthetic)"
+        }
+      }
+    },
+    "lens": {
+      "backend": "lens",
+      "database_name": "Lens",
+      "platform": "Lens API",
+      "search_fields": [
+        "title",
+        "abstract"
+      ],
+      "options": {
+        "lens_api_query": {
+          "query": {
+            "bool": {
+              "must": [
+                {
+                  "query_string": {
+                    "query": "synthetic",
+                    "fields": [
+                      "title",
+                      "abstract"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "queries": {
+        "full": {
+          "query": "synthetic"
+        }
+      }
+    },
+    "fixture_db": {
+      "backend": "manual_ris",
+      "database_name": "Fixture Research Database",
+      "platform": "Synthetic",
+      "search_fields": [
+        "title",
+        "abstract"
+      ],
+      "options": {
+        "registry": "tests/fixtures/manual_registry.json",
+        "ris_files": [
+          "tests/fixtures/synthetic_records.ris"
+        ],
+        "search_executed_at_utc": "2026-01-02T10:00:00Z",
+        "exported_at_utc": "2026-01-02T11:00:00Z"
+      },
+      "queries": {
+        "full": {
+          "query": "synthetic"
+        }
+      }
+    }
+  }
+}
