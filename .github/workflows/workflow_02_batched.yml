@@ -3,6 +3,11 @@ name: Workflow 02 - Batched bibliographic enrichment
 on:
   workflow_call:
     inputs:
+      zenodo_config_path:
+        description: Explicit project-specific Zenodo title and creators
+        type: string
+        required: false
+        default: ''
       first_run:
         description: Initialise an entirely new review, with no prior baseline
         required: false
@@ -68,6 +73,11 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      zenodo_config_path:
+        description: Explicit project-specific Zenodo title and creators
+        type: string
+        required: false
+        default: ''
       first_run:
         description: Initialise an entirely new review, with no prior baseline
         required: false
@@ -144,6 +154,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  EVIDENCE_ZENODO_CONFIG: ${{ inputs.zenodo_config_path }}
   WORKFLOW01_BRANCH: ${{ github.ref_name }}
   WORKFLOW02_BRANCH: ${{ github.ref_name }}
 
