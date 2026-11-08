@@ -39,5 +39,6 @@
         }
       }
     }
-  }
+  },
+  "project_id": "REPLACE_WITH_UNIQUE_PROJECT_SLUG"
 }
