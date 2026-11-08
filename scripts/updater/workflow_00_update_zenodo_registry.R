@@ -27,6 +27,7 @@ dir.create(dirname(registry_path),recursive=TRUE,showWarnings=FALSE)
 dir.create(pointer_dir,recursive=TRUE,showWarnings=FALSE)
 
 row <- data.frame(
+  project_id=as.character(x$project_id),
   github_run_id=as.character(x$github_run_id),
   run_type=as.character(x$run_type),
   search_version=as.character(x$search_version),
@@ -42,6 +43,10 @@ row <- data.frame(
 
 if (file.exists(registry_path)) {
   old <- read.csv(registry_path,stringsAsFactors=FALSE,check.names=FALSE)
+  # Historical registries may predate the explicit project_id column.
+  for(col in setdiff(names(row),names(old)))old[[col]]<-NA_character_
+  for(col in setdiff(names(old),names(row)))row[[col]]<-NA_character_
+  old <- old[,names(row),drop=FALSE]
   old <- old[as.character(old$github_run_id) != row$github_run_id,,drop=FALSE]
   out <- rbind(old,row)
 } else out <- row
