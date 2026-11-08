@@ -1,6 +1,9 @@
 #!/usr/bin/env Rscript
 suppressPackageStartupMessages({library(httr2);library(jsonlite);library(digest)})
 
+source("scripts/updater/workflow_zenodo_metadata.R",local=TRUE)
+zenodo_config <- workflow_zenodo_metadata()
+
 args <- commandArgs(trailingOnly=TRUE)
 arg <- function(flag,default=NULL){
   i <- match(flag,args)
@@ -94,19 +97,19 @@ perform <- function(req,expected,label,timeout=600){
   resp
 }
 metadata <- list(metadata=list(
-  title=sprintf("Living Evidence Map post-Workflow 02 lean canonical checkpoint | source run %s",source_run_id),
+  title=sprintf("%s | Enriched canonical checkpoint | source run %s",zenodo_config$title,source_run_id),
   upload_type="dataset",
   publication_date=format(Sys.Date(),"%Y-%m-%d"),
   description=paste0(
-    "<p>Authoritative lean canonical checkpoint produced after Living Evidence Map Workflow 02.</p>",
+    "<p>Authoritative lean canonical checkpoint produced after evidence synthesis workflow 02.</p>",
     "<p>The checkpoint preserves all ",as.integer(rep$canonical_records)," canonical works and all canonical metadata while replacing embedded manifestation objects with exact source:source_record_id references.</p>",
     "<p>Input post-Workflow 02 canonical SHA-256: <code>",input_sha,"</code>.</p>",
     "<p>Lean canonical SHA-256: <code>",lean_sha,"</code>.</p>"
   ),
-  creators=list(list(name="Haddaway, Neal")),
+  creators=zenodo_config$creators,
   access_right="restricted",
   access_conditions="Files contain bibliographic metadata whose redistribution may be restricted by source terms.",
-  keywords=list("Living Evidence Map","Workflow 02","lean canonical checkpoint","provenance",paste0("LivingEvidenceMap-post-w02-run-",source_run_id))
+  keywords=list("evidence synthesis","Workflow 02","lean canonical checkpoint","provenance",paste0("LivingEvidenceMap-post-w02-run-",source_run_id))
 ))
 created <- perform(request(api)|>req_method("POST")|>auth()|>req_headers("Content-Type"="application/json")|>req_body_raw(charToRaw("{}"),type="application/json"),201L,"draft creation",60)|>resp_body_json(simplifyVector=FALSE)
 dep_id <- as.character(created$id)
