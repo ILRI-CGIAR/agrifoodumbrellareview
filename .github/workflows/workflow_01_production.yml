@@ -1076,12 +1076,14 @@ jobs:
           delta_root() {
             local source="$1"
             local p="current_workflow00/$source/source_delta/filtered_source"
+            if [ ! -d "$p" ]; then p="current_workflow00/$source/native_id_reconciliation/filtered_source"; fi
             if [ -d "$p" ]; then printf '%s' "$p"; else printf ''; fi
           }
 
           delta_n() {
             local source="$1"
             local m="current_workflow00/$source/source_delta/reconciliation_manifest.json"
+            if [ ! -s "$m" ]; then m="current_workflow00/$source/native_id_reconciliation/reconciliation_manifest.json"; fi
             if [ -s "$m" ]; then
               M="$m" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("M"));cat(as.integer(x$new_native_ids))'
             else
