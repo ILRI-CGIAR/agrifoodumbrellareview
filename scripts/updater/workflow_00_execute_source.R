@@ -90,10 +90,18 @@ if(backend=="manual_ris"){
   if(any(!file.exists(check)))stop("Manual source inputs missing: ",paste(check[!file.exists(check)],collapse=", "))
 }
 dir.create(dest,recursive=TRUE,showWarnings=FALSE)
+started <- format(Sys.time(),tz="UTC",format="%Y-%m-%dT%H:%M:%SZ")
+writeLines(toJSON(list(source=source,backend=backend,started_at_utc=started,
+  query=query,search_version=plan$search_version),auto_unbox=TRUE,pretty=TRUE),
+  file.path(dest,"execution_metadata.json"))
 runner <- file.path(R.home("bin"),"Rscript")
 status <- system2(runner,args=shQuote(c(path,cli)),stdout="",stderr="")
 if(!identical(as.integer(status),0L))stop("W00 handler failed: ",source,call.=FALSE)
 if(!file.exists(file.path(dest,"manifest.json")))stop("Handler completed without manifest: ",source,call.=FALSE)
 m <- fromJSON(file.path(dest,"manifest.json"),simplifyVector=FALSE)
 if(!identical(sval(m$status,"success"),"success"))stop("Handler did not complete successfully: ",source,call.=FALSE)
+finished <- format(Sys.time(),tz="UTC",format="%Y-%m-%dT%H:%M:%SZ")
+writeLines(toJSON(list(source=source,backend=backend,started_at_utc=started,
+  completed_at_utc=finished,query=query,search_version=plan$search_version),
+  auto_unbox=TRUE,pretty=TRUE),file.path(dest,"execution_metadata.json"))
 cat(sprintf("PASS: W00 source=%s backend=%s completed with original handler\n",source,backend))
