@@ -56,7 +56,12 @@ strategy_for <- function(source){
   if(run_type %in% c("fortnightly","monthly") &&
      is.null(mode$filter) && is.null(mode$window))
     stop(source,": update needs an explicit verified filter/window",call.=FALSE)
+  backend <- if(is.null(z$backend))source else required_string(z$backend,paste0(source," backend"))
+  options <- z$options
+  if(is.null(options))options <- list()
+  if(!is.list(options))stop(source,": options must be an object",call.=FALSE)
   list(query=query,fields=as.character(scope),database=db,platform=platform,
+       backend=backend,options=options,
        filter=filter,window=mode$window,notes=mode$notes)
 }
 defs <- lapply(selected,strategy_for);names(defs)<-selected
