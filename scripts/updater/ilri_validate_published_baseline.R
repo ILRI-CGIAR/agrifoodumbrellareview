@@ -52,6 +52,31 @@ expect(sum(vapply(w03$status_counts,num,integer(1)))==21054L,"W03 classification
 expect(21054L-num(w03$exclude_from_workflow04)==21029L,"retained records count")
 expect(identical(status$workflow03_pointer_path,
   "docs/publication_status/zenodo/run-42418518879.json"),"current-run W03 pointer")
+ledger <- read_json("docs/workflow00/ilri_search_provenance_ledger.json")
+expect(identical(ledger$schema,"ilri-search-provenance-ledger-v1"),"search provenance ledger schema")
+entries <- ledger$sources
+codes <- vapply(entries,function(z)sval(z$code),character(1))
+expect(length(codes)==8L&&!anyDuplicated(codes)&&setequal(codes,names(sources)),
+       "search provenance roster must contain exactly the eight ILRI sources")
+for(e in entries){
+  code <- sval(e$code)
+  expect(num(e$retrieved_records)==sources[[code]],paste("search ledger count",code))
+  if(nzchar(sval(e$search_string_path)))
+    expect(file.exists(file_at(e$search_string_path)),paste("query file missing for",code))
+  if(sval(e$zenodo_publication_status)=="reserved_draft_not_verified")
+    expect(nzchar(sval(e$zenodo_record_doi)),paste("draft DOI absent for",code))
+}
+expect(num(ledger$total_source_records)==sum(sources),"search provenance total")
+report_ready <- all(vapply(entries,function(z){
+  nzchar(sval(z$search_string_path)) && isTRUE(z$search_fields_verified) &&
+    length(z$searched_fields)>0L && !is.null(z$provider_reported_hits) &&
+    nzchar(sval(z$search_executed_at_utc)) && nzchar(sval(z$exported_at_utc)) &&
+    identical(sval(z$zenodo_publication_status),"published_verified")
+},logical(1)))
+cat(sprintf("SEARCH_REPORT_READY=%s\n",if(report_ready)"true" else "false"))
+if(identical(tolower(arg("--require-report-ready","false")),"true"))
+  expect(report_ready,"verbatim queries, dates, hit counts, search-field verification and published source archives are incomplete")
+
 cat(sprintf("PASS: 8 source counts sum to %d, %d canonical, %d excluded, %d retained. All published handoff checksums agree.\n",
   sum(sources),num(w01$canonical_records),num(w03$exclude_from_workflow04),
   num(w01$canonical_records)-num(w03$exclude_from_workflow04)))
