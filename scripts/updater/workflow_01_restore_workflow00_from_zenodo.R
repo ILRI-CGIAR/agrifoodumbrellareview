@@ -70,12 +70,17 @@ expected <- lapply(archive_files,function(z) {
 })
 names(expected) <- vapply(expected,function(z) z$filename,character(1))
 
-wanted_names <- c(
-  vapply(sources,function(src)
-    sprintf("LivingEvidenceMap_workflow00_run-%s_%s-harvest.tar.gz",x$github_run_id,src),
-    character(1)),
-  sprintf("LivingEvidenceMap_workflow00_run-%s_manifest.json",x$github_run_id)
-)
+find_archive <- function(suffix){
+  matches <- names(expected)[endsWith(names(expected),suffix)]
+  if(length(matches)!=1L)stop("Expected one archived file ending with ",suffix,call.=FALSE)
+  matches[[1L]]
+}
+run_id <- as.character(x$github_run_id)
+src_names <- setNames(vapply(sources,function(src)
+  find_archive(sprintf("_workflow00_run-%s_%s-harvest.tar.gz",run_id,src)),
+  character(1)),sources)
+manifest_name <- find_archive(sprintf("_workflow00_run-%s_manifest.json",run_id))
+wanted_names <- c(unname(src_names),manifest_name)
 missing_expected <- setdiff(wanted_names,names(expected))
 if (length(missing_expected)) {
   stop(sprintf("Pointer does not describe required file(s): %s",paste(missing_expected,collapse=", ")),call.=FALSE)
@@ -155,7 +160,7 @@ download_one <- function(filename) {
   dest
 }
 
-manifest_name <- sprintf("LivingEvidenceMap_workflow00_run-%s_manifest.json",x$github_run_id)
+# Manifest name resolved uniquely against SHA-verified archive_files.
 manifest_local <- download_one(manifest_name)
 manifest_sha <- digest(file=manifest_local,algo="sha256",serialize=FALSE)
 if (!is.null(x$manifest_sha256) && !identical(tolower(manifest_sha),tolower(as.character(x$manifest_sha256)))) {
@@ -163,7 +168,7 @@ if (!is.null(x$manifest_sha256) && !identical(tolower(manifest_sha),tolower(as.c
 }
 
 for (src in sources) {
-  filename <- sprintf("LivingEvidenceMap_workflow00_run-%s_%s-harvest.tar.gz",x$github_run_id,src)
+  filename <- src_names[[src]]
   tar_path <- download_one(filename)
   utils::untar(tar_path,exdir=output_root)
   src_dir <- file.path(output_root,src)
