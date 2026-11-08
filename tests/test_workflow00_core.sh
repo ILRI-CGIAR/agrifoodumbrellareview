@@ -172,3 +172,17 @@ for(script in c(
 ))parse(file=script)
 cat("PASS: all eight backends dry-run, W01 handoff path, core workflow YAML and scripts parse\n")
 RS
+
+# API source-native IDs: use original generic reconciler without external calls.
+mkdir -p "$tmp/scopus_source/raw" "$tmp/history"
+cat > "$tmp/scopus_source/raw/response_000001.json" <<'JSON'
+{"search-results":{"entry":[{"eid":"2-s2.0-100","dc:title":"Synthetic one"},{"eid":"2-s2.0-101","dc:title":"Synthetic two"}]}}
+JSON
+Rscript scripts/updater/workflow_00_native_id_reconcile.R \
+  --source scopus --run-type full \
+  --current-root "$tmp/scopus_source" \
+  --history-root "$tmp/history" \
+  --output-dir "$tmp/scopus_native_reconciliation"
+test "$(wc -l < "$tmp/scopus_native_reconciliation/updated_native_ids.txt")" -eq 2
+test -s "$tmp/scopus_native_reconciliation/filtered_source/raw/response_000001.json"
+echo "PASS: original native-ID reconciliation verified on synthetic API response"
