@@ -1,0 +1,32 @@
+name: ILRI baseline provenance checks (read-only)
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths:
+      - scripts/updater/ilri_validate_published_baseline.R
+      - .github/workflows/ilri_baseline_provenance_checks.yml
+      - docs/workflow00/ilri_validated_artifacts_2026-11-07.json
+      - docs/current_run/current_run_status.json
+      - docs/deduplication/zenodo/run-42401289007.json
+      - docs/enrichment/zenodo/run-42418084454.json
+      - docs/compaction/zenodo/run-42418084454.json
+      - docs/publication_status/zenodo/run-42418518879.json
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: migration/w00-w03
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install JSON parser
+        run: Rscript -e "install.packages('jsonlite')"
+      - name: Verify original retrieval, canonical counts, published handoffs and restrictions
+        run: Rscript scripts/updater/ilri_validate_published_baseline.R
