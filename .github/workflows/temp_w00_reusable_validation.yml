@@ -24,3 +24,5 @@ jobs:
       execute: false
       publish: false
     secrets: inherit
+
+# Rerun after W00 shell preflight delimiter correction
