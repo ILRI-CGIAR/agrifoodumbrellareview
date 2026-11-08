@@ -45,7 +45,11 @@ state$updated_at_utc <- format(Sys.time(),tz="UTC",format="%Y-%m-%dT%H:%M:%SZ")
 
 pointer <- sprintf("docs/search_record/zenodo/run-%s.json",receipt$github_run_id)
 for (src in sources) {
-  filename <- sprintf("agrifoodumbrellareview_workflow00_run-%s_%s-harvest.tar.gz",receipt$github_run_id,src)
+  suffix <- sprintf("_workflow00_run-%s_%s-harvest.tar.gz",receipt$github_run_id,src)
+  candidates <- vapply(archive_files,function(a)as.character(a$filename),character(1))
+  matches <- candidates[endsWith(candidates,suffix)]
+  if(length(matches)!=1L)stop("Expected one matching source harvest archive: ",src,call.=FALSE)
+  filename <- matches[[1L]]
   match <- Filter(function(a)identical(as.character(a$filename),filename),archive_files)
   if (length(match)!=1L) stop(sprintf("Receipt does not contain one harvest archive for %s",src),call.=FALSE)
   a <- match[[1L]]
