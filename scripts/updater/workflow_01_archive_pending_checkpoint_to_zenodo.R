@@ -6,6 +6,9 @@ suppressPackageStartupMessages({
   library(digest)
 })
 
+source("scripts/updater/workflow_zenodo_metadata.R",local=TRUE)
+zenodo_config <- workflow_zenodo_metadata()
+
 args <- commandArgs(trailingOnly=TRUE)
 arg <- function(flag,default=NULL){
   i <- match(flag,args)
@@ -81,13 +84,13 @@ perform <- function(req,expected,label,timeout=600){
   resp
 }
 
-title <- sprintf("Living Evidence Map Workflow 01 human-review checkpoint | run %s",run_id)
+title <- sprintf("%s | Deduplication review checkpoint | run %s",zenodo_config$title,run_id)
 metadata <- list(metadata=list(
   title=title,
   upload_type="dataset",
   publication_date=format(Sys.Date(),"%Y-%m-%d"),
   description=paste0(
-    "<p>Compact pre-adjudication checkpoint for Living Evidence Map Workflow 01.</p>",
+    "<p>Compact pre-adjudication checkpoint for evidence synthesis workflow 01.</p>",
     if(isTRUE(cm$first_run)) {
       "<p>First-run checkpoint containing the initial source manifestations, pair decisions, LLM adjudications and locked human-review queue.</p>"
     } else {
@@ -97,10 +100,10 @@ metadata <- list(metadata=list(
     },
     "<p>Pending human-review cases: ",cm$pending_human_cases,".</p>"
   ),
-  creators=list(list(name="Haddaway, Neal")),
+  creators=zenodo_config$creators,
   access_right="restricted",
   access_conditions="Files contain bibliographic metadata and derived deduplication state from database/API sources whose terms may limit redistribution.",
-  keywords=list("Living Evidence Map","Workflow 01","deduplication","human review","checkpoint",
+  keywords=list("evidence synthesis","Workflow 01","deduplication","human review","checkpoint",
                 paste0("LivingEvidenceMap-workflow01-run-",run_id))
 ))
 
