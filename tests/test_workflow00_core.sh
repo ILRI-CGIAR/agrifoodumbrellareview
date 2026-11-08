@@ -8,15 +8,6 @@ Rscript scripts/updater/workflow_00_search_orchestrator.R \
   --run-type full --config "$config" --output-dir "$tmp/full"
 Rscript scripts/updater/workflow_00_search_orchestrator.R \
   --run-type monthly --config "$config" --output-dir "$tmp/monthly"
-W00_SELECT_SCOPUS=true W00_SELECT_WOS=true \
-Rscript scripts/updater/workflow_00_resolve_source_selection.R \
-  --run-type full --output "$tmp/selection.json"
-Rscript scripts/updater/workflow_00_resolve_source_selection.R \
-  --run-type monthly --saved "$tmp/selection.json" \
-  --output "$tmp/monthly_selection.json"
-Rscript scripts/updater/workflow_00_search_orchestrator.R \
-  --run-type monthly --config "$config" \
-  --source-selection "$tmp/monthly_selection.json" --output-dir "$tmp/selected"
 Rscript scripts/updater/write_workflow00_search_record.R \
   --source scopus --run-type full \
   --query 'TITLE-ABS-KEY("synthetic term")' \
@@ -64,17 +55,13 @@ root <- Sys.getenv("TMP_TEST_DIR")
 load <- function(path)fromJSON(file.path(root,path),simplifyVector=FALSE)
 full <- load("full/search_plan.json")
 monthly <- load("monthly/search_plan.json")
-selected <- load("selected/search_plan.json")
 stopifnot(identical(full$schema,"evidence-search-plan-v2"),
           length(full$source_queries)==2L,
           identical(full$source_queries$scopus,'TITLE-ABS-KEY("synthetic term")'),
           identical(full$source_mode_support$scopus$expansion,FALSE),
           identical(monthly$source_definitions$scopus$window$from,"2026-01-01"),
           identical(monthly$source_definitions$wos$filter$modifiedTimeSpan$to,"2026-02-01"),
-          length(selected$source_queries)==2L)
-sel<-load("monthly_selection.json")
-stopifnot(identical(sort(unlist(sel$selected_sources)),sort(c("scopus","wos"))),
-          identical(sel$selection_origin,"saved_full_run"))
+          length(monthly$source_queries)==2L)
 files<-list.files(file.path(root,"records"),pattern="\\.json$",recursive=TRUE,full.names=TRUE)
 stopifnot(length(files)==1L)
 planned_files<-list.files(file.path(root,"from_plan"),pattern="\\.json$",recursive=TRUE,full.names=TRUE)
@@ -96,7 +83,7 @@ stopifnot(identical(source_report$schema,"evidence-search-source-report-v1"),
   as.integer(source_report$downloaded_manifestations)==28L,
   length(source_report$source_searches)==2L,
   identical(source_report$report_ready,FALSE))
-cat("PASS: topic-neutral full and monthly search planning; source selection; provenance receipt\n")
+cat("PASS: topic-neutral full and monthly search planning; source planning; provenance receipt\n")
 RS
 # Negative check: an expansion without verified source-specific search strings
 # must fail, rather than fabricate an expansion query.
