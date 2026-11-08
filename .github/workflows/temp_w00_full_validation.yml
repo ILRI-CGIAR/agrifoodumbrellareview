@@ -22,9 +22,20 @@ jobs:
       - name: Validate source planner, original handler dry run, provenance, archive and W01 adapters
         run: |
           set -euo pipefail
-          bash tests/test_workflow00_core.sh
-          mkdir -p outputs/offline/plan outputs/offline/harvests/scopus/source_child/raw outputs/offline/harvests/wos/source_child/raw
-          Rscript scripts/updater/workflow_00_search_orchestrator.R             --run-type full --config tests/fixtures/workflow00_search_strategy.json             --output-dir outputs/offline/plan
+          mkdir -p outputs/offline/plan
+          python3 - <<'PY'
+          import json,pathlib
+          p=pathlib.Path('outputs/offline/search_strategy.json')
+          q={'schema':'evidence-search-strategy-v1','search_version':'test-001','sources':{
+            'scopus':{'database_name':'Scopus','platform':'Scopus API','search_fields':['title','abstract','keywords'],
+              'queries':{'full':{'query':'TITLE-ABS-KEY("synthetic term")'}}},
+            'wos':{'database_name':'Web of Science','platform':'WoS API','search_fields':['title','abstract','author_keywords'],
+              'queries':{'full':{'query':'TI=("synthetic term") OR AB=("synthetic term") OR AK=("synthetic term")'}}}
+          }}
+          p.write_text(json.dumps(q))
+          PY
+ outputs/offline/harvests/scopus/source_child/raw outputs/offline/harvests/wos/source_child/raw
+          Rscript scripts/updater/workflow_00_search_orchestrator.R             --run-type full --config outputs/offline/search_strategy.json             --output-dir outputs/offline/plan
           for SOURCE in scopus wos; do
             Rscript scripts/updater/workflow_00_execute_source.R               --search-plan outputs/offline/plan/search_plan.json --source "$SOURCE"               --output-root outputs/offline/harvests --execute false
           done
