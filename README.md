@@ -1,47 +1,50 @@
-# Agri-food umbrella review: reproducible bibliographic pipeline
+# Evidence synthesis: bibliographic acquisition and processing
 
-R-based literature search, deduplication, metadata repair, retraction checks and export, developed for the ILRI-CGIAR project. Work only on `migration/w00-w03`; the original LivingEvidenceMap repository and this repository's `main` branch must not be changed by these pipeline refinements.
+This repository is being refactored into a **topic-independent, project-configured** pipeline for literature searching, deduplication, bibliographic metadata repair, publication-status checking, and final export.
 
-## Completed first-run benchmark (7–8 November 2026)
+**Refactoring branch:** `migration/w00-w03`. Do not make changes to `main` or the source LivingEvidenceMap repository.
 
-| Stage | Verified result | Restricted Zenodo DOI |
-| --- | ---: | --- |
-| Source manifestations across 8 databases | 46,361 | Search sources have separate, partly unverified deposits |
-| Deduplicated canonical publications | 21,054 | [10.5281/zenodo.24042387](https://doi.org/10.5281/zenodo.24042387) |
-| Enrichment patch for records requiring repair | 5,595 | [10.5281/zenodo.24044641](https://doi.org/10.5281/zenodo.24044641) |
-| Compact enriched canonical checkpoint | 21,054 | [10.5281/zenodo.24044666](https://doi.org/10.5281/zenodo.24044666) |
-| Publication-status assessments | 21,054 (25 retractions) | [10.5281/zenodo.24044731](https://doi.org/10.5281/zenodo.24044731) |
-| Non-retracted publications for RIS export | 21,029 | **The client-ready RIS is not itself a Zenodo publication** |
+## Pipeline architecture
 
-The manual Web of Science/Scopus RIS abstract patch adds 234 abstracts by exact normalised-title agreement only. This patch was applied to the client RIS/export after the published enriched checkpoint, and must be applied again in a deliberately versioned export stage in future runs. The original published Zenodo checkpoint is immutable.
+1. **Search and acquisition**: project-specific, provider-valid Boolean strategies supplied as data, recorded along with fields searched, actual search/export dates, provider-reported hits, downloaded records, per-source native-ID reconciliation, and authenticated source archives.
+2. **Deduplication**: one canonical work per publication, with every contributing database and original source identity preserved. Decisions requiring review remain auditable.
+3. **Metadata repair**: API and manual abstract fills with DOI/title identity safeguards; preserve conflicting provider evidence and exact decisions.
+4. **Publication status**: retraction/correction/withdrawal checks and a publication-status record for every canonical work.
+5. **Export and reporting**: final included-record RIS (including multiple database provenance), provenance CSV, excluded-work audit, one consolidated methods/results PDF, and checksums.
 
-The detailed **eight-source source counts**, run IDs and publication pointers are in `docs/workflow00/ilri_validated_artifacts_2026-11-07.json` and `docs/current_run/current_run_status.json`. Verify their consistency from a fresh R session:
+The final-export format and validation rules are defined in `docs/architecture/final_export_contract.md`.
 
-```r
-install.packages("jsonlite")
-system2("Rscript", "scripts/updater/ilri_validate_published_baseline.R")
+## Current refactor status
+
+The **search query planner, source selection, and search receipt writer** are being made independent of topic or prior run IDs. The permanent smoke/regression tests are in `tests/test_workflow00_core.sh`, executed by `.github/workflows/core_pipeline_checks.yml`.
+
+The generic search planner reads `user_input/workflow00_search_strategy.json`, with schema `evidence-search-strategy-v1`, and requires the **full verbatim executed query** and search-field definition for every selected database. Each update also requires its own provider-verified query/filter; the planner does not manufacture date logic. Example format: `tests/fixtures/workflow00_search_strategy.json`. The fixture is synthetic and not a valid substantive search strategy.
+
+Example, from a fresh R session / shell:
+
+```bash
+Rscript scripts/updater/workflow_00_search_orchestrator.R \
+  --run-type full \
+  --config user_input/workflow00_search_strategy.json \
+  --output-dir outputs/updater/workflow00_plan
+
+bash tests/test_workflow00_core.sh
 ```
 
-The same checks run in `.github/workflows/ilri_baseline_provenance_checks.yml`. They are read-only: no API searches, Zenodo deposits or state changes.
+Neither example executes a remote search or publishes to Zenodo. Source-specific harvesters and the downstream workflows must still be integrated and validated before launching a new project's first full pipeline run.
 
-## Refactoring plan, one stage at a time
+## Historical production evidence
 
-1. **Search/acquisition**: one project-specific source roster; preserve verbatim database-specific strings, exact searched fields, real search and export timestamps, provider-reported hits, successfully retrieved records, native-ID deduplication, complete retrieval evidence, per-source immutable archive receipt, and a full coverage report. Reject placeholder dates in final client reports. Do not repurpose the original salmon-oriented generic search generator for this ILRI strategy.
-2. **Deduplication**: reproducible incremental state and a reviewer-controlled ambiguity queue; source manifestations retained, so a merged publication lists every contributing database. Do not silently equate `no decision` with `not duplicate`.
-3. **Metadata repair**: Europe PMC then Scopus with explicit DOI and title identity checks, idempotent batch resumes using input/code fingerprinting that excludes orchestration-only changes, auditable provider quarantine and decisions; allow separately sourced manual RIS abstract updates using strict normalised-title equality.
-4. **Retraction check**: publication-status evidence, positive evidence precedence, explicit excluded work IDs and DOIs in summary; no unnecessary provider reruns to produce a new report.
-5. **Export/reporting**: one command generating an RIS of non-retracted records, full multi-database provenance field(s), provenance CSV, search methods, abstract-repair and retraction reports in PDF, and machine-readable provenance receipts. Reconcile record counts and archive checksums before release.
+The branch retains immutable pointers and receipts for an earlier eight-database run, which successfully produced 46,361 original manifestations, 21,054 canonical works, and 25 retraction exclusions. These are **historical provenance, not inputs or expected counts for a new project**.
 
-## Safety and update policy
+Published restricted Zenodo records for that earlier project: [deduplication](https://doi.org/10.5281/zenodo.24042387), [metadata repair](https://doi.org/10.5281/zenodo.24044641), [canonical handoff](https://doi.org/10.5281/zenodo.24044666), [publication-status layer](https://doi.org/10.5281/zenodo.24044731). Earlier source-specific draft DOI identifiers are not evidence of published deposits.
 
-- Keep original first-run records, registries and DOI pointers unchanged as reference fixtures. Never mutate published deposits to backfill newer abstract repairs.
-- Each stage must pass a dry-run fixture and validate its predecessor's signed inventory/manifest before any production invocation.
-- No work beyond searching, deduplication, enrichment, status checks and export is configured for this repository. W04 is **not** part of this project.
-- Do not trigger searches, repeated API enrichment, Zenodo publication or automatic downstream dispatch merely by committing documentation or temporary scripts.
-- Stale migrated workflow definitions currently remain in the repository. Some refer to unavailable Shiny/Google Sheets features, to `main`, or to source inventories unrelated to this project: these must be reviewed individually before any recurring automation is enabled.
+## Safety requirements
 
-## Known W00 issues to resolve
+- Never use the earlier project's source counts, queries, dates, review IDs or DOI pointers as defaults for a new project.
+- Preserve original source manifestations and use their identifiers, not abstract-repair providers, to determine database provenance.
+- Do not infer original search dates from file upload, registry or GitHub execution timestamps.
+- Published restricted Zenodo states are immutable. Producing an export does not authorise a new deposit.
+- Run offline tests first. No expensive API calls or automatic downstream dispatch during refactoring.
 
-The inherited `workflow_00_search_orchestrator.R` expects `user_input/workflow00_search_strategy.json`, which is absent from this ILRI branch and is not an appropriate representation of the existing large database-specific umbrella-review queries. `workflow_00_resolve_source_selection.R` includes an unrelated 19-source monthly-update assumption. Current manual registry files for CAB, ProQuest and LILACS mark their dates as **technical placeholders**, not verified export dates; their Zenodo DOIs are reserved draft identifiers, not confirmed publications. The existing `ilri_launch_original_w01.yml` is a historical first-run launcher, not a safe recurring scheduler.
-
-Therefore, the next production-search implementation must be project-specific and fail closed when search syntax, native filtering, timestamps or archive metadata are incomplete.
+**Work remaining:** consolidate source-specific acquisition and manual RIS ingestion, then deduplication, enrichment, retraction checking, and generic final reporting. The repository is **not yet approved as an end-to-end reusable production system**.
