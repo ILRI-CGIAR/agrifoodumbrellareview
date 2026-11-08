@@ -24,6 +24,18 @@ sources <- sources[nzchar(sources)]
 repository <- arg("--repository")
 output_dir <- arg("--output-dir")
 ebsco_config_path <- arg("--ebsco-config","config/workflow00_ebsco_sources.json")
+zenodo_config_path <- arg("--zenodo-config")
+validate_only <- identical(tolower(arg("--validate-only","false")),"true")
+if(is.null(zenodo_config_path)||!file.exists(zenodo_config_path))
+  stop("Provide an explicit project Zenodo metadata config via --zenodo-config",call.=FALSE)
+zenodo_cfg <- fromJSON(zenodo_config_path,simplifyVector=FALSE)
+if(is.null(zenodo_cfg$creators)||!length(zenodo_cfg$creators))
+  stop("Zenodo metadata config requires project creators",call.=FALSE)
+project_title <- as.character(or_else(zenodo_cfg$title,""))
+if(!nzchar(trimws(project_title)))stop("Zenodo metadata config requires project title",call.=FALSE)
+archive_prefix <- gsub("[^a-zA-Z0-9_-]+","_",basename(repository))
+if(!nzchar(archive_prefix))stop("Invalid repository archive prefix",call.=FALSE)
+
 if (any(vapply(list(run_id,run_type,search_version,repository,output_dir),is.null,logical(1))) || !length(sources)) {
   stop("Required: --staging-root --run-id --run-type --search-version --sources --repository --output-dir",call.=FALSE)
 }
@@ -31,7 +43,7 @@ dir.create(output_dir,recursive=TRUE,showWarnings=FALSE)
 output_dir <- normalizePath(output_dir,mustWork=TRUE)
 
 token <- Sys.getenv("ZENODO_ACCESS_TOKEN")
-if (!nzchar(token)) stop("ZENODO_ACCESS_TOKEN is not set",call.=FALSE)
+if (!validate_only && !nzchar(token)) stop("ZENODO_ACCESS_TOKEN is not set",call.=FALSE)
 
 base_sources <- c("lens","scopus","openalex","agricola","pubmed","ethos","cba","epmc_preprints","wos")
 if (!file.exists(ebsco_config_path)) stop(sprintf("EBSCO source config not found: %s",ebsco_config_path),call.=FALSE)
@@ -40,7 +52,7 @@ allowed_sources <- c(base_sources,names(ebsco_cfg$sources))
 if (any(!sources %in% allowed_sources)) stop(sprintf("Unexpected source(s) in --sources: %s",paste(setdiff(sources,allowed_sources),collapse=", ")),call.=FALSE)
 
 api <- "https://zenodo.org/api/deposit/depositions"
-marker <- paste0("agrifoodumbrellareview-workflow00-run-",run_id)
+marker <- paste0(archive_prefix,"-workflow00-run-",run_id)
 run_url <- sprintf("https://github.com/%s/actions/runs/%s",repository,run_id)
 archive_dir <- file.path(output_dir,"archive_files")
 dir.create(archive_dir,recursive=TRUE,showWarnings=FALSE)
@@ -77,7 +89,7 @@ archive_paths <- character()
 for (src in sources) {
   src_dir <- file.path(staging_root,"harvests",src)
   if (!dir.exists(src_dir)) stop(sprintf("Staged harvest missing for %s",src),call.=FALSE)
-  out <- file.path(archive_dir,sprintf("agrifoodumbrellareview_workflow00_run-%s_%s-harvest.tar.gz",run_id,src))
+  out <- file.path(archive_dir,sprintf("%s_workflow00_run-%s_%s-harvest.tar.gz",archive_prefix,run_id,src))
   make_tar(file.path(staging_root,"harvests"),src,out)
   archive_paths <- c(archive_paths,out)
 }
@@ -86,7 +98,7 @@ doc_members <- c("plan","search_records")
 if (dir.exists(file.path(staging_root,"expansion_reconciliation"))) {
   doc_members <- c(doc_members,"expansion_reconciliation")
 }
-doc_out <- file.path(archive_dir,sprintf("agrifoodumbrellareview_workflow00_run-%s_search-documentation.tar.gz",run_id))
+doc_out <- file.path(archive_dir,sprintf("%s_workflow00_run-%s_search-documentation.tar.gz",archive_prefix,run_id))
 make_tar(staging_root,doc_members,doc_out)
 archive_paths <- c(archive_paths,doc_out)
 
@@ -101,7 +113,9 @@ manifest <- list(
   schema="living-evidence-map-workflow00-search-archive-v1",
   github_run_id=run_id,
   github_run_url=run_url,
+  archive_prefix=archive_prefix,
   repository=repository,
+  archive_prefix=archive_prefix,
   run_type=run_type,
   search_version=search_version,
   sources=sources,
@@ -109,7 +123,7 @@ manifest <- list(
   file_visibility="restricted",
   files=file_meta
 )
-manifest_path <- file.path(archive_dir,sprintf("agrifoodumbrellareview_workflow00_run-%s_manifest.json",run_id))
+manifest_path <- file.path(archive_dir,sprintf("%s_workflow00_run-%s_manifest.json",archive_prefix,run_id))
 writeLines(toJSON(manifest,auto_unbox=TRUE,pretty=TRUE,null="null"),manifest_path)
 archive_paths <- c(archive_paths,manifest_path)
 
@@ -135,13 +149,11 @@ perform <- function(req, expected, label, timeout = 600) {
   resp
 }
 
-expected_title <- sprintf(
-  "Living Evidence Map search archive | %s | Workflow 00 run %s",
-  run_type, run_id
-)
+expected_title <- sprintf("%s | Search archive | %s | run %s",
+  project_title,run_type,run_id)
 
 description <- paste0(
-  "<p>Search archive for the Living Evidence Map Workflow 00 ingestion pipeline.</p>",
+  "<p>Source search archive for a reproducible evidence-synthesis project.</p>",
   "<p>This record corresponds to GitHub Actions run <a href=\"",run_url,"\">",run_id,"</a> and ",
   "contains the downloaded source search outputs, source manifests, search-plan documentation and provenance records ",
   "for the selected databases. Files are restricted because source database/API terms may limit redistribution.</p>",
@@ -154,7 +166,7 @@ metadata <- list(metadata = list(
   upload_type = "dataset",
   publication_date = format(Sys.Date(), "%Y-%m-%d"),
   description = description,
-  creators = list(list(name = "Haddaway, Neal")),
+  creators = zenodo_cfg$creators,
   access_right = "restricted",
   access_conditions = paste(
     "Files contain database/API search-result exports and are restricted",
@@ -162,7 +174,7 @@ metadata <- list(metadata = list(
     "Access may be granted by the depositor where permitted."
   ),
   keywords = list(
-    "Living Evidence Map",
+    project_title,
     "evidence synthesis",
     "search archive",
     "Workflow 00",
@@ -175,6 +187,14 @@ metadata <- list(metadata = list(
   )
 ))
 
+if(validate_only){
+  writeLines(toJSON(list(status="validated_not_published",sources=sources,
+    archive_prefix=archive_prefix,files=file_meta,manifest_sha256=digest(file=manifest_path,algo="sha256",serialize=FALSE)),
+    auto_unbox=TRUE,pretty=TRUE,null="null"),
+    file.path(output_dir,"offline_validation.json"))
+  cat(sprintf("PASS: W00 offline archive package for %d source(s); zero Zenodo requests\n",length(sources)))
+  quit(save="no",status=0L)
+}
 cat("ZENODO CREATE\n")
 created_resp <- perform(
   request(api) |>
