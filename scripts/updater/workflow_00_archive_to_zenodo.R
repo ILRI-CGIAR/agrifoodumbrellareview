@@ -45,11 +45,8 @@ output_dir <- normalizePath(output_dir,mustWork=TRUE)
 token <- Sys.getenv("ZENODO_ACCESS_TOKEN")
 if (!validate_only && !nzchar(token)) stop("ZENODO_ACCESS_TOKEN is not set",call.=FALSE)
 
-base_sources <- c("lens","scopus","openalex","agricola","pubmed","ethos","cba","epmc_preprints","wos")
-if (!file.exists(ebsco_config_path)) stop(sprintf("EBSCO source config not found: %s",ebsco_config_path),call.=FALSE)
-ebsco_cfg <- fromJSON(ebsco_config_path,simplifyVector=FALSE)
-allowed_sources <- c(base_sources,names(ebsco_cfg$sources))
-if (any(!sources %in% allowed_sources)) stop(sprintf("Unexpected source(s) in --sources: %s",paste(setdiff(sources,allowed_sources),collapse=", ")),call.=FALSE)
+if (any(!grepl("^[a-z0-9][a-z0-9_-]*$",sources)) || anyDuplicated(sources))
+  stop("Archive sources must be unique stable lower-case identifiers",call.=FALSE)
 
 api <- "https://zenodo.org/api/deposit/depositions"
 marker <- paste0(archive_prefix,"-workflow00-run-",run_id)
