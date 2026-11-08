@@ -1,0 +1,26 @@
+name: TEMP verify W00 reusable workflow full and update dry-run
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths: ['.github/workflows/temp_w00_reusable_validation.yml']
+permissions:
+  contents: read
+jobs:
+  full:
+    uses: ./.github/workflows/workflow_00_production.yml
+    with:
+      strategy_path: tests/w00_temporary_strategy.json
+      zenodo_config_path: user_input/zenodo_config.example.json
+      run_type: full
+      execute: false
+      publish: false
+    secrets: inherit
+  monthly:
+    uses: ./.github/workflows/workflow_00_production.yml
+    with:
+      strategy_path: tests/w00_temporary_strategy.json
+      zenodo_config_path: user_input/zenodo_config.example.json
+      run_type: monthly
+      execute: false
+      publish: false
+    secrets: inherit
