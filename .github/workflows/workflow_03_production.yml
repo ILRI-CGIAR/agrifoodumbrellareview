@@ -3,6 +3,11 @@ name: Workflow 03 - Publication status
 on:
   workflow_call:
     inputs:
+      zenodo_config_path:
+        description: Explicit project-specific Zenodo title and creators
+        type: string
+        required: false
+        default: ''
       first_run:
         description: Initialise an entirely new review, with no prior baseline
         required: false
@@ -37,6 +42,11 @@ on:
 
   workflow_dispatch:
     inputs:
+      zenodo_config_path:
+        description: Explicit project-specific Zenodo title and creators
+        type: string
+        required: false
+        default: ''
       first_run:
         description: Initialise an entirely new review, with no prior baseline
         required: false
@@ -71,6 +81,7 @@ permissions:
   actions: write
 
 env:
+  EVIDENCE_ZENODO_CONFIG: ${{ inputs.zenodo_config_path }}
   WORKFLOW01_BRANCH: ${{ github.ref_name }}
   WORKFLOW02_BRANCH: ${{ github.ref_name }}
 
