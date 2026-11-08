@@ -9,11 +9,11 @@ suppressPackageStartupMessages({
 
 `%||%` <- function(x,y) if(is.null(x)) y else x
 
-zenodo_config <- jsonlite::fromJSON("user_input/zenodo_config.json",simplifyVector=FALSE)
+source("scripts/updater/workflow_zenodo_metadata.R",local=TRUE)
+zenodo_config <- workflow_zenodo_metadata()
 zenodo_creators <- zenodo_config$creators
-zenodo_access_right <- as.character(zenodo_config$access_right)
-if(is.null(zenodo_creators)||!length(zenodo_creators)||any(!vapply(zenodo_creators,function(z)!is.null(z$name)&&length(z$name)==1L&&nzchar(trimws(as.character(z$name))),logical(1))))stop("Configure at least one Zenodo creator",call.=FALSE)
-if(length(zenodo_access_right)!=1L||!identical(zenodo_access_right,"restricted"))stop("W00-W08 archives require restricted Zenodo deposits",call.=FALSE)
+zenodo_access_right <- zenodo_config$access_right
+
 args <- commandArgs(trailingOnly=TRUE)
 arg <- function(flag,default=NULL){
   i <- match(flag,args)
@@ -99,9 +99,9 @@ perform <- function(req,expected,label,timeout=600){
   resp
 }
 
-title <- sprintf("Living Evidence Map Workflow 01 delta | run %s",run_id)
+title <- sprintf("%s | Deduplication delta | run %s",zenodo_config$title,run_id)
 description <- paste0(
-  "<p>Incremental durable-state delta for the Living Evidence Map Workflow 01 deduplication pipeline.</p>",
+  "<p>Incremental durable-state delta for the evidence synthesis workflow 01 deduplication pipeline.</p>",
   "<p>This record does not duplicate the full corpus. It extends Workflow 01 state from Zenodo record ",
   dm$previous$zenodo_record_id," to GitHub Actions run <a href=\"",run_url,"\">",run_id,"</a>.</p>",
   "<p>New source manifestations: ",dm$delta$new_source_manifestations,
@@ -121,7 +121,7 @@ metadata <- list(metadata=list(
     "Files contain bibliographic metadata and derived deduplication state from database/API sources",
     "whose terms may limit redistribution. Access may be granted by the depositor where permitted."
   ),
-  keywords=list("Living Evidence Map","evidence synthesis","deduplication","Workflow 01","incremental delta",
+  keywords=list("evidence synthesis","evidence synthesis","deduplication","Workflow 01","incremental delta",
                 paste0("LivingEvidenceMap-workflow01-run-",run_id)),
   notes=paste0(
     "Previous Workflow 01 Zenodo record: ",dm$previous$zenodo_record_id,
