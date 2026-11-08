@@ -2,7 +2,7 @@
 
 For a new unrelated project:
 
-1. Copy `workflow00_search_strategy.example.json` to your project configuration path. Replace the project strategy version, every search string and the listed databases with the exact provider-specific searches you intend to run. Keep only databases that are actually being searched. The workflow never translates a Scopus string into another provider's syntax.
+1. Copy `workflow00_search_strategy.example.json` to your project configuration path. Set a unique lowercase `project_id` for the review; replace the project strategy version, every search string and the listed databases with the exact provider-specific searches you intend to run. Keep only databases that are actually being searched. The workflow never translates a Scopus string into another provider's syntax.
 2. Copy `zenodo_config.example.json` to the project metadata path. Replace the project title and creators. Source deposits are restricted, and publication requires a separately selected `publish=true` action.
 3. When searching a manually exported database, use `backend: "manual_ris"`. Supply `options.registry`, `options.ris_files`, and verified `search_executed_at_utc` and `exported_at_utc` timestamps. The registry must use `workflow00-source-registry-v1` and exactly match the uploaded RIS filenames.
 4. Open the permanent `Workflow 00 - Search and source archive` workflow, supply both configuration file paths, and first use `execute=false`, `publish=false` to check routing. Only initiate live queries and Zenodo publication after explicit approval.
@@ -20,4 +20,6 @@ The `sources` object maps a unique lowercase source code to a source definition 
 
 The working R source entry points are `scripts/updater/workflow_00_search_orchestrator.R`, `workflow_00_execute_source.R`, `workflow_00_record_source.R`, `workflow_00_validate_search_receipts.R`, and the inherited source handler scripts.
 
-**Limit:** The W00 production runner currently allows full first-run execution only. Live update/expansion runs intentionally fail preflight until cumulative native-ID reconciliation is validated. The final RIS/PDF report belongs to the later permanent export stage and is not part of the initial database retrieval.
+**Updates:** Keep the `project_id` unchanged across the same review's searches and provide `previous_w00_pointer_path` with the previous published search archive. Monthly and fortnightly updates require the same source roster; add databases through `expansion`. The workflow compares the new source-native IDs against the previous cumulative registry and passes only unseen manifestations to deduplication. Historical archives must belong to the same project. The offline update route is validated, but actual provider calls still require explicit authorisation.
+
+**Branch availability:** The workflow is a reusable `workflow_call` entry point on the current working branch. A direct GitHub Actions `workflow_dispatch` generally requires the workflow to exist on the repository's default branch; this refactoring does not change `main`. A caller on the working branch can invoke it without modifying `main`. The final RIS/PDF report belongs to the later permanent export stage.
