@@ -27,6 +27,24 @@ known_native_results <- suppressWarnings(as.integer(arg("--known-native-results"
 new_native_results <- suppressWarnings(as.integer(arg("--new-native-results","")))
 source_manifest <- arg("--source-manifest","")
 output_root <- arg("--output-root","outputs/updater/search_record")
+# Explicit provenance for client reports. Never confuse execution with export time.
+database_name <- arg("--database-name","")
+platform_name <- arg("--platform","")
+fields_arg <- arg("--search-fields","")
+searched_at <- arg("--searched-at-utc","")
+exported_at <- arg("--exported-at-utc","")
+source_doi <- arg("--source-zenodo-doi","")
+source_doi_status <- arg("--source-zenodo-status","unverified")
+search_fields <- if(nzchar(fields_arg))trimws(strsplit(fields_arg,",",fixed=TRUE)[[1L]]) else character()
+search_fields <- unique(search_fields[nzchar(search_fields)])
+valid_utc <- function(x)grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",x)
+if(nzchar(searched_at)&&!valid_utc(searched_at))stop("Invalid searched-at-utc (YYYY-MM-DDTHH:MM:SSZ)",call.=FALSE)
+if(nzchar(exported_at)&&!valid_utc(exported_at))stop("Invalid exported-at-utc (YYYY-MM-DDTHH:MM:SSZ)",call.=FALSE)
+if(!source_doi_status %in% c("published_verified","reserved_draft","unverified","not_applicable"))
+  stop("Invalid source-zenodo-status",call.=FALSE)
+if(source_doi_status=="published_verified" && !nzchar(source_doi))
+  stop("Published Zenodo status requires a DOI",call.=FALSE)
+
 
 req <- c(source,run_type,query,parent_run_id)
 if (any(vapply(req,function(x)is.null(x)||!nzchar(x),logical(1)))) stop("source, run-type, query and parent-run-id are required",call.=FALSE)
@@ -49,9 +67,18 @@ if (nzchar(source_manifest)) {
 }
 
 record <- list(
-  schema_version="1.2",
+  schema_version="1.3",
   recorded_at_utc=format(Sys.time(),tz="UTC",format="%Y-%m-%dT%H:%M:%SZ"),
   source=source,
+  database_name=if(nzchar(database_name)) database_name else NULL,
+  platform=if(nzchar(platform_name)) platform_name else NULL,
+  searched_fields=if(length(search_fields)) unname(search_fields) else NULL,
+  search_executed_at_utc=if(nzchar(searched_at)) searched_at else NULL,
+  exported_at_utc=if(nzchar(exported_at)) exported_at else NULL,
+  source_archive=list(
+    doi=if(nzchar(source_doi))source_doi else NULL,
+    publication_status=source_doi_status
+  ),
   run_type=run_type,
   search_version=if(nzchar(search_version)) search_version else NULL,
   additional_search_term=if(nzchar(additional_search_term)) additional_search_term else NULL,
@@ -94,6 +121,12 @@ md <- c(
   sprintf("- **Run type:** %s", run_type),
   sprintf("- **Search version:** %s", if(nzchar(search_version)) search_version else "not supplied"),
   sprintf("- **Source:** %s", source),
+  sprintf("- **Database:** %s", if(nzchar(database_name)) database_name else "not verified"),
+  sprintf("- **Platform:** %s", if(nzchar(platform_name)) platform_name else "not verified"),
+  sprintf("- **Searched fields:** %s", if(length(search_fields))paste(search_fields,collapse=", ") else "not verified"),
+  sprintf("- **Search executed at:** %s", if(nzchar(searched_at))searched_at else "not verified"),
+  sprintf("- **Exported at:** %s", if(nzchar(exported_at))exported_at else "not verified"),
+  sprintf("- **Source archive DOI:** %s (%s)", if(nzchar(source_doi))source_doi else "none",source_doi_status),
   sprintf("- **Results reported by source:** %d", reported),
   sprintf("- **Results successfully downloaded:** %d", downloaded),
   sprintf("- **Complete download:** %s", if(reported==downloaded) "yes" else "no"),
@@ -144,7 +177,7 @@ if (!is.null(database_scope)) {
 }
 
 if (nzchar(additional_search_term)) {
-  md <- c(md,"","## Ad hoc expansion","","The immutable species block was unchanged.", sprintf("Additional search term: `%s`",additional_search_term))
+  md <- c(md,"","## Ad hoc expansion","","Expansion terms and exact query syntax are specified in the source strategy.", sprintf("Additional search term: `%s`",additional_search_term))
 }
 writeLines(md,md_path)
 cat(sprintf("SEARCH_RECORD_JSON=%s\nSEARCH_RECORD_MD=%s\n",json_path,md_path))
