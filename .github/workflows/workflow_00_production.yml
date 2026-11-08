@@ -121,6 +121,7 @@ jobs:
             PREVIOUS_POINTER="$PREVIOUS_POINTER" MODE="$MODE" Rscript - <<'RS'
             x <- jsonlite::fromJSON(Sys.getenv("PREVIOUS_POINTER"),simplifyVector=FALSE)
             p <- jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json",simplifyVector=FALSE)
+            stopifnot(identical(as.character(x$project_id),as.character(p$project_id)))
             stopifnot(identical(x$status,"published"),identical(x$visibility,"restricted"),
               nzchar(as.character(x$zenodo_deposition_id)))
             old <- as.character(unlist(x$sources,use.names=FALSE))
@@ -217,10 +218,11 @@ jobs:
             --output outputs/workflow00/plan/source_search_report.json
           SOURCES="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json",simplifyVector=FALSE);cat(paste(names(x$source_definitions),collapse=","))')"
           VERSION="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json");cat(x$search_version)')"
+          PROJECT_ID="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json");cat(x$project_id)')"
           Rscript scripts/updater/workflow_00_archive_to_zenodo.R \
             --staging-root outputs/workflow00 --run-id "$GITHUB_RUN_ID" \
             --repository "$GITHUB_REPOSITORY" --run-type "$MODE" \
-            --search-version "$VERSION" --sources "$SOURCES" \
+            --search-version "$VERSION" --project-id "$PROJECT_ID" --sources "$SOURCES" \
             --zenodo-config "$ZENODO_CONFIG" \
             --output-dir outputs/workflow00_archive --validate-only true
       - name: Publish restricted source archive only when explicitly requested
@@ -234,10 +236,11 @@ jobs:
           test -n "$ZENODO_ACCESS_TOKEN"
           SOURCES="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json",simplifyVector=FALSE);cat(paste(names(x$source_definitions),collapse=","))')"
           VERSION="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json");cat(x$search_version)')"
+          PROJECT_ID="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json");cat(x$project_id)')"
           Rscript scripts/updater/workflow_00_archive_to_zenodo.R \
             --staging-root outputs/workflow00 --run-id "$GITHUB_RUN_ID" \
             --repository "$GITHUB_REPOSITORY" --run-type "$MODE" \
-            --search-version "$VERSION" --sources "$SOURCES" \
+            --search-version "$VERSION" --project-id "$PROJECT_ID" --sources "$SOURCES" \
             --zenodo-config "$ZENODO_CONFIG" \
             --output-dir outputs/workflow00_archive
       - name: Register new archived search receipt
