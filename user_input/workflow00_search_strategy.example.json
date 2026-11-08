@@ -1,0 +1,43 @@
+{
+  "schema": "evidence-search-strategy-v1",
+  "search_version": "REPLACE_WITH_UNIQUE_STRATEGY_VERSION",
+  "sources": {
+    "scopus": {
+      "database_name": "Scopus",
+      "platform": "Elsevier Scopus API",
+      "backend": "scopus",
+      "search_fields": [
+        "title",
+        "abstract",
+        "keywords"
+      ],
+      "queries": {
+        "full": {
+          "query": "REPLACE_WITH_VERIFIED_SCOPUS_QUERY"
+        }
+      }
+    },
+    "manual_database": {
+      "database_name": "REPLACE_WITH_MANUAL_DATABASE_NAME",
+      "platform": "REPLACE_WITH_SEARCH_PLATFORM",
+      "backend": "manual_ris",
+      "search_fields": [
+        "title",
+        "abstract"
+      ],
+      "options": {
+        "registry": "user_input/REPLACE_WITH_SOURCE_REGISTRY.json",
+        "ris_files": [
+          "user_input/REPLACE_WITH_EXPORTED_FILE.ris"
+        ],
+        "search_executed_at_utc": "REPLACE_WITH_ACTUAL_UTC_TIMESTAMP",
+        "exported_at_utc": "REPLACE_WITH_ACTUAL_UTC_TIMESTAMP"
+      },
+      "queries": {
+        "full": {
+          "query": "REPLACE_WITH_EXACT_MANUAL_SEARCH_STRING"
+        }
+      }
+    }
+  }
+}
