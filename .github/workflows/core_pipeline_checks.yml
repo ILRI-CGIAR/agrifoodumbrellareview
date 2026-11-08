@@ -7,6 +7,10 @@ on:
       - scripts/updater/workflow_00_resolve_source_selection.R
       - scripts/updater/write_workflow00_search_record.R
       - scripts/updater/workflow_00_validate_search_receipts.R
+      - scripts/updater/workflow_00_execute_source.R
+      - scripts/updater/workflow_00_record_source.R
+      - scripts/updater/workflow_00_archive_to_zenodo.R
+      - .github/workflows/workflow_00_production.yml
       - tests/**
       - .github/workflows/core_pipeline_checks.yml
   workflow_dispatch:
@@ -25,6 +29,6 @@ jobs:
           r-version: release
           use-public-rspm: true
       - name: Install test dependencies
-        run: Rscript -e "install.packages(c('jsonlite','digest'))"
+        run: Rscript -e "install.packages(c('jsonlite','digest','httr2','curl','xml2'))"
       - name: Test core search functions without API requests or Zenodo writes
         run: bash tests/test_workflow00_core.sh
