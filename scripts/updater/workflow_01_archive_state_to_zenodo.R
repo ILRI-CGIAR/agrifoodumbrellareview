@@ -6,6 +6,9 @@ suppressPackageStartupMessages({
   library(digest)
 })
 
+source("scripts/updater/workflow_zenodo_metadata.R",local=TRUE)
+zenodo_config <- workflow_zenodo_metadata()
+
 args <- commandArgs(trailingOnly=TRUE)
 arg <- function(flag, default=NULL) {
   i <- match(flag,args)
@@ -126,9 +129,9 @@ perform <- function(req,expected,label,timeout=600) {
   resp
 }
 
-title <- sprintf("Living Evidence Map deduplication state | Workflow 01 run %s | %s",run_id,state)
+title <- sprintf("%s | Deduplication state | run %s | %s",zenodo_config$title,run_id,state)
 description <- paste0(
-  "<p>Durable state archive for the Living Evidence Map Workflow 01 deduplication pipeline.</p>",
+  "<p>Durable state archive for the evidence synthesis workflow 01 deduplication pipeline.</p>",
   "<p>GitHub Actions run <a href=\"",run_url,"\">",run_id,"</a>. ",
   "State: ",state,". Manifestations: ",summary$source_manifestations,
   ". Unique incremental pair decisions: ",summary$incremental_pair_decisions,
@@ -142,14 +145,14 @@ metadata <- list(metadata=list(
   upload_type="dataset",
   publication_date=format(Sys.Date(),"%Y-%m-%d"),
   description=description,
-  creators=list(list(name="Haddaway, Neal")),
+  creators=zenodo_config$creators,
   access_right="restricted",
   access_conditions=paste(
     "Files contain bibliographic metadata and derived deduplication state from database/API sources",
     "whose terms may limit redistribution. Access may be granted by the depositor where permitted."
   ),
   keywords=list(
-    "Living Evidence Map","evidence synthesis","deduplication","Workflow 01",
+    "evidence synthesis","evidence synthesis","deduplication","Workflow 01",
     paste0("LivingEvidenceMap-workflow01-run-",run_id),state
   ),
   notes=paste0(
