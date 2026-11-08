@@ -3,11 +3,6 @@ name: Workflow 03 - Publication status
 on:
   workflow_call:
     inputs:
-      auto_launch_w04:
-        description: Automatically dispatch W04 after W03 (disable only for Shiny-managed review)
-        required: false
-        default: true
-        type: boolean
       first_run:
         description: Initialise an entirely new review, with no prior baseline
         required: false
@@ -42,11 +37,6 @@ on:
 
   workflow_dispatch:
     inputs:
-      auto_launch_w04:
-        description: Automatically dispatch W04 after W03 (disable only for Shiny-managed review)
-        required: false
-        default: true
-        type: boolean
       first_run:
         description: Initialise an entirely new review, with no prior baseline
         required: false
@@ -81,8 +71,8 @@ permissions:
   actions: write
 
 env:
-  WORKFLOW01_BRANCH: migration/w00-w03
-  WORKFLOW02_BRANCH: migration/w00-w03
+  WORKFLOW01_BRANCH: ${{ github.ref_name }}
+  WORKFLOW02_BRANCH: ${{ github.ref_name }}
 
 jobs:
   publication-status:
@@ -94,7 +84,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: migration/w00-w03
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
 
       - name: Set up R
@@ -244,7 +234,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin migration/w00-w03
+          git pull --rebase origin "$GITHUB_REF_NAME"
           Rscript scripts/updater/workflow_03_update_zenodo_registry.R \
             --receipt outputs/workflow03_zenodo/zenodo_receipt.json \
             --registry docs/publication_status/zenodo_registry.csv \
@@ -253,34 +243,9 @@ jobs:
           git add docs/publication_status/zenodo_registry.csv "$POINTER"
           if ! git diff --cached --quiet; then
             git commit -m "Register Workflow 03 publication-status state $GITHUB_RUN_ID"
-            git push origin HEAD:migration/w00-w03
+            git push origin "HEAD:$GITHUB_REF_NAME"
           fi
           echo "pointer_path=$POINTER" >> "$GITHUB_OUTPUT"
-
-      - name: Record published W03 status in ILRI GitHub-only run
-        if: ${{ (github.event_name == 'push' || inputs.publish == true) && (github.event_name == 'push' || inputs.limit == '0') }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git pull --rebase origin migration/w00-w03
-          Rscript - <<'RS'
-          library(jsonlite)
-          p <- 'docs/current_run/current_run_status.json'
-          x <- fromJSON(p,simplifyVector=FALSE)
-          stopifnot(identical(x$branch,'migration/w00-w03'),identical(x$first_run,TRUE))
-          x$status <- 'w03_published'
-          x$workflow03_pointer_path <- paste0('docs/publication_status/zenodo/run-',Sys.getenv('GITHUB_RUN_ID'),'.json')
-          stopifnot(file.exists(x$workflow03_pointer_path))
-          writeLines(toJSON(x,auto_unbox=TRUE,pretty=TRUE,null='null'),p)
-          RS
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/current_run/current_run_status.json
-          if ! git diff --cached --quiet; then
-            git commit -m "Record W03 publication in ILRI current-run status [skip ci]"
-            git pull --rebase origin migration/w00-w03
-            git push origin HEAD:migration/w00-w03
-          fi
 
       - name: Upload validated Workflow 03 handoff cache
         if: ${{ (github.event_name == 'push' || inputs.publish == true) && (github.event_name == 'push' || inputs.limit == '0') }}
@@ -293,45 +258,6 @@ jobs:
             outputs/workflow03/report.json
           retention-days: 7
           if-no-files-found: error
-
-      - name: Trigger Workflow 04 after successful Workflow 03
-        if: ${{ (github.event_name == 'push' || inputs.publish == true) && (github.event_name == 'push' || inputs.limit == '0') && inputs.auto_launch_w04 != false }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          STATUS="docs/current_run/current_run_status.json"
-          W03_POINTER="docs/publication_status/zenodo/run-$GITHUB_RUN_ID.json"
-          LEAN_POINTER="${{ inputs.lean_pointer_path }}"
-          test -s "$STATUS"
-          test -s "$W03_POINTER"
-          test -s "$LEAN_POINTER"
-          FIRST_RUN="${{ inputs.first_run || false }}"
-          PREV_W04=""
-          PREV_LEAN=""
-          if [ "$FIRST_RUN" = "false" ]; then
-            PREV_W04="$(Rscript -e 'x<-jsonlite::fromJSON("docs/current_run/current_run_status.json",simplifyVector=FALSE);cat(as.character(x$baseline$workflow04_pointer))')"
-            PREV_LEAN="$(Rscript -e 'x<-jsonlite::fromJSON("docs/current_run/current_run_status.json",simplifyVector=FALSE);cat(as.character(x$baseline$lean_pointer))')"
-            test -n "$PREV_W04"
-            test -s "$PREV_W04"
-            test -n "$PREV_LEAN"
-            test -s "$PREV_LEAN"
-          fi
-          gh workflow run workflow_04_production.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref migration/w00-w03 \
-            -f execution_pathway=github \
-            -f first_run="$FIRST_RUN" \
-            -f lean_pointer_path="$LEAN_POINTER" \
-            -f workflow03_pointer_path="$W03_POINTER" \
-            -f prior_workflow04_pointer_path="$PREV_W04" \
-            -f prior_lean_pointer_path="$PREV_LEAN" \
-            -f manual_decisions_path='' \
-            -f manual_repair_zenodo_record_id='' \
-            -f recovery_pass1_zenodo_record_id='' \
-            -f publish='true'
-          echo "PASS: dispatched Workflow 04 from authoritative W03 run $GITHUB_RUN_ID"
 
       - name: Upload Workflow 03 execution state
         if: always()
