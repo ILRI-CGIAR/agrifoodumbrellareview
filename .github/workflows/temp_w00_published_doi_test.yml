@@ -1,0 +1,89 @@
+name: TEMP verify W00 published source DOI reporting offline
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths: ['.github/workflows/temp_w00_published_doi_test.yml']
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: migration/w00-w03
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install parsers and digest
+        run: Rscript -e "install.packages(c('jsonlite','digest'))"
+      - name: Generate synthetic topic-neutral source receipts and validate publication handoff
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/w00-case
+          Rscript - <<'RS'
+          library(jsonlite)
+          p<-list(schema="evidence-search-plan-v2",project_id="testtopic",
+            search_version="unit-001",run_type="full",
+            source_definitions=list(
+              scopus=list(query="TITLE-ABS-KEY(synthetic)",database="Scopus",platform="Scopus API",fields=list("title","abstract")),
+              wos=list(query="TI=synthetic",database="WoS",platform="WoS API",fields=list("title","abstract"))))
+          writeLines(toJSON(p,auto_unbox=TRUE,pretty=TRUE),"/tmp/w00-case/plan.json")
+          RS
+          for source in scopus wos; do
+            Rscript scripts/updater/write_workflow00_search_record.R \
+              --source "$source" --run-type full \
+              --search-plan /tmp/w00-case/plan.json \
+              --reported-results 17 --downloaded-results 17 \
+              --parent-run-id 12345 --child-run-id 12345 \
+              --searched-at-utc 2026-01-02T10:00:00Z \
+              --exported-at-utc 2026-01-02T10:25:00Z \
+              --source-zenodo-status unverified \
+              --output-root /tmp/w00-case/receipts
+          done
+          Rscript scripts/updater/workflow_00_validate_search_receipts.R \
+            --search-plan /tmp/w00-case/plan.json \
+            --receipts-dir /tmp/w00-case/receipts \
+            --output /tmp/w00-case/prepublication.json
+          Rscript - <<'RS'
+          library(jsonlite)
+          x<-list(status="published",visibility="restricted",doi="10.5281/zenodo.12345678",
+            project_id="testtopic",search_version="unit-001",run_type="full",
+            github_run_id="12345",sources=list("scopus","wos"),
+            archive_files=list(list(filename="sample_manifest.json",sha256=paste(rep("a",64),collapse=""),bytes=42)))
+          writeLines(toJSON(x,auto_unbox=TRUE,pretty=TRUE),"/tmp/w00-case/pointer.json")
+          RS
+          Rscript scripts/updater/workflow_00_validate_search_receipts.R \
+            --search-plan /tmp/w00-case/plan.json \
+            --receipts-dir /tmp/w00-case/receipts \
+            --archive-pointer /tmp/w00-case/pointer.json \
+            --require-published true \
+            --output /tmp/w00-case/published.json
+          Rscript - <<'RS'
+          library(jsonlite)
+          before<-fromJSON("/tmp/w00-case/prepublication.json")
+          after<-fromJSON("/tmp/w00-case/published.json")
+          stopifnot(!before$report_ready,after$report_ready,
+            after$source_count==2L, after$downloaded_manifestations==34L,
+            identical(after$published_source_archive_doi,"10.5281/zenodo.12345678"),
+            all(after$source_searches$source_archive.publication_status=="published_verified"))
+          cat("PASS: original receipts remain pre-publication; joined final report has verified Zenodo DOI\n")
+          RS
+          Rscript - <<'RS'
+          library(jsonlite)
+          x<-fromJSON("/tmp/w00-case/pointer.json",simplifyVector=FALSE)
+          x$project_id<-"wrongproject"
+          writeLines(toJSON(x,auto_unbox=TRUE,pretty=TRUE),"/tmp/w00-case/bad_pointer.json")
+          RS
+          if Rscript scripts/updater/workflow_00_validate_search_receipts.R \
+            --search-plan /tmp/w00-case/plan.json \
+            --receipts-dir /tmp/w00-case/receipts \
+            --archive-pointer /tmp/w00-case/bad_pointer.json \
+            --require-published true \
+            --output /tmp/w00-case/invalid.json; then
+            echo "ERROR: mismatched project was accepted" >&2
+            exit 1
+          fi
+          echo "PASS: mismatched project DOI provenance fails closed"
