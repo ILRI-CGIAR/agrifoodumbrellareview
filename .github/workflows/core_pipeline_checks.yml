@@ -29,6 +29,6 @@ jobs:
           r-version: release
           use-public-rspm: true
       - name: Install test dependencies
-        run: Rscript -e "install.packages(c('jsonlite','digest','httr2','curl','xml2'))"
+        run: Rscript -e "install.packages(c('jsonlite','digest','httr2','curl','xml2','yaml'))"
       - name: Test core search functions without API requests or Zenodo writes
         run: bash tests/test_workflow00_core.sh
