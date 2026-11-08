@@ -37,6 +37,7 @@ source_doi <- arg("--source-zenodo-doi","")
 source_doi_status <- arg("--source-zenodo-status","unverified")
 # A search plan is the authoritative source of the executed search expression
 # and its field scope. A caller may also supply them explicitly, but must agree.
+project_id <- ""
 plan_path <- arg("--search-plan","")
 if(nzchar(plan_path)){
   if(!file.exists(plan_path))stop("Missing search plan: ",plan_path,call.=FALSE)
@@ -44,6 +45,8 @@ if(nzchar(plan_path)){
   if(!identical(plan$schema,"evidence-search-plan-v2"))
     stop("Unsupported search plan schema",call.=FALSE)
   if(!identical(run_type,plan$run_type))stop("Search plan run-type mismatch",call.=FALSE)
+  project_id <- as.character(plan$project_id)
+  if(!nzchar(project_id))stop("Missing project_id in search plan",call.=FALSE)
   def <- plan$source_definitions[[source]]
   if(is.null(def))stop("Source not present in search plan: ",source,call.=FALSE)
   planned_query <- as.character(def$query)
@@ -97,7 +100,8 @@ if (nzchar(source_manifest)) {
 }
 
 record <- list(
-  schema_version="1.3",
+  schema_version="1.4",
+  project_id=if(nzchar(project_id))project_id else NULL,
   recorded_at_utc=format(Sys.time(),tz="UTC",format="%Y-%m-%dT%H:%M:%SZ"),
   source=source,
   database_name=if(nzchar(database_name)) database_name else NULL,
