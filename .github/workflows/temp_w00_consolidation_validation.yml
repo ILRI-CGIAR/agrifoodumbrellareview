@@ -1,0 +1,182 @@
+name: TEMP W00 initial and incremental offline regression
+on:
+  push:
+    branches: [migration/w00-w03]
+    paths: ['.github/workflows/temp_w00_consolidation_validation.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: migration/w00-w03
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install minimal original dependencies
+        shell: bash
+        run: Rscript -e "install.packages(c('jsonlite','digest','httr2'))"
+      - name: Build synthetic independent source inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/workflow00/harvests/scopus/source_child/raw
+          mkdir -p outputs/workflow00/harvests/manual_example/source_child
+          mkdir -p outputs/update/harvests/scopus/source_child/raw
+          mkdir -p outputs/update/harvests/manual_example/source_child
+          python3 - <<'PY'
+          import json, pathlib
+          p=pathlib.Path
+          def save(fn,obj):
+            dest=p(fn);dest.parent.mkdir(parents=True,exist_ok=True)
+            dest.write_text(json.dumps(obj,ensure_ascii=False,indent=2)+'\n')
+          strategy={"schema":"evidence-search-strategy-v1","search_version":"synth-1","sources":{
+            "scopus":{"database_name":"Scopus","platform":"Scopus API","search_fields":["title","abstract","keywords"],
+              "queries":{"full":{"query":"TITLE-ABS-KEY(test)"}, "monthly":{"query":"TITLE-ABS-KEY(test) AND ORIG-LOAD-DATE AFT 20261001",
+                  "filter":{"index_after":"2026-10-01"},"window":{"from":"2026-10-01","to":"2026-11-01"}}}},
+            "manual_example":{"backend":"manual_ris","database_name":"Fictional Bibliography","platform":"Manual RIS","search_fields":["title","abstract"],
+              "options":{"search_executed_at_utc":"2026-11-01T10:00:00Z","exported_at_utc":"2026-11-01T11:00:00Z"},
+              "queries":{"full":{"query":"(synthetic evidence)"}, "monthly":{"query":"(synthetic evidence) AND (new results)",
+                "filter":{"updated_from":"2026-10-01"},"window":{"from":"2026-10-01","to":"2026-11-01"}}}}
+          }}
+          save("outputs/fixture_strategy.json",strategy)
+          save("outputs/fixture_zenodo.json",{"title":"Synthetic Validation of Source Search Archiving","creators":[{"name":"Example, Researcher"}]})
+          def sr(eid,title):
+            return {"eid":eid,"dc:title":title,"dc:identifier":"SCOPUS_ID:"+eid,
+              "prism:coverDate":"2026-01-02","dc:creator":"Example Author",
+              "prism:publicationName":"Test Journal"}
+          def manual(id,title):
+            return {"source":{"provider":"manual_example","source_format":"ris"},"sidecar_identity":{"sidecar_record_id":id},
+              "mapped_fields":{"title":title,"year":2026,"abstract":"Synthetic abstract."}}
+          def jl(fn,records):
+            p(fn).write_text("".join(json.dumps(x,ensure_ascii=False)+"\n" for x in records))
+          base="outputs/workflow00/harvests"
+          save(f"{base}/scopus/source_child/raw/response_000001.json",
+               {"search-results":{"entry":[sr("A","Study A"),sr("A","Study A"),sr("B","Study B")]}})
+          save(f"{base}/scopus/source_child/manifest.json",
+               {"status":"success","unpartitioned_total":3,"entries_retrieved":3})
+          save(f"{base}/scopus/source_child/execution_metadata.json",
+               {"query":"TITLE-ABS-KEY(test)","started_at_utc":"2026-11-01T10:00:00Z",
+                "completed_at_utc":"2026-11-01T10:25:00Z"})
+          jl(f"{base}/manual_example/source_child/records.jsonl",
+               [manual("manual_example:alpha","A"),manual("manual_example:beta","B")])
+          save(f"{base}/manual_example/source_child/manifest.json",
+               {"status":"success","records":{"reported_search_results":2,"unique_records_for_handover":2}})
+          save(f"{base}/manual_example/source_child/execution_metadata.json",
+               {"query":"(synthetic evidence)","started_at_utc":"2026-11-01T10:00:00Z",
+                "completed_at_utc":"2026-11-01T11:00:00Z"})
+          base="outputs/update/harvests"
+          save(f"{base}/scopus/source_child/raw/response_000001.json",
+               {"search-results":{"entry":[sr("B","Study B"),sr("C","Study C")]}})
+          save(f"{base}/scopus/source_child/manifest.json",
+               {"status":"success","unpartitioned_total":2,"entries_retrieved":2})
+          save(f"{base}/scopus/source_child/execution_metadata.json",
+               {"query":"TITLE-ABS-KEY(test) AND ORIG-LOAD-DATE AFT 20261001",
+                "started_at_utc":"2026-11-02T10:00:00Z","completed_at_utc":"2026-11-02T10:10:00Z"})
+          jl(f"{base}/manual_example/source_child/records.jsonl",
+               [manual("manual_example:beta","B"),manual("manual_example:gamma","C")])
+          save(f"{base}/manual_example/source_child/manifest.json",
+               {"status":"success","records":{"reported_search_results":2,"unique_records_for_handover":2}})
+          save(f"{base}/manual_example/source_child/execution_metadata.json",
+               {"query":"(synthetic evidence) AND (new results)",
+                "started_at_utc":"2026-11-02T10:00:00Z","completed_at_utc":"2026-11-02T11:00:00Z"})
+          PY
+      - name: Validate first-run source reconciliation, receipt and W01 handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_00_search_orchestrator.R --run-type full \
+            --config outputs/fixture_strategy.json --output-dir outputs/workflow00/plan
+          mkdir -p outputs/workflow00/empty_history
+          for SOURCE in scopus manual_example; do
+            SCRIPT="workflow_00_sidecar_native_id_reconcile.R"
+            if [ "$SOURCE" = scopus ]; then SCRIPT="workflow_00_native_id_reconcile.R"; fi
+            Rscript "scripts/updater/$SCRIPT" --source "$SOURCE" --run-type full \
+              --current-root "outputs/workflow00/harvests/$SOURCE/source_child" \
+              --history-root outputs/workflow00/empty_history \
+              --output-dir "outputs/workflow00/harvests/$SOURCE/native_id_reconciliation"
+            Rscript scripts/updater/workflow_00_record_source.R \
+              --search-plan outputs/workflow00/plan/search_plan.json --source "$SOURCE" \
+              --output-root outputs/workflow00 --parent-run-id 111111
+          done
+          Rscript scripts/updater/workflow_00_validate_search_receipts.R \
+            --search-plan outputs/workflow00/plan/search_plan.json \
+            --receipts-dir outputs/workflow00/search_records \
+            --output outputs/workflow00/plan/source_search_report.json
+          Rscript scripts/updater/workflow_00_archive_to_zenodo.R --validate-only true \
+            --staging-root outputs/workflow00 --run-id 111111 --run-type full \
+            --repository example/evidence --search-version synth-1 \
+            --sources scopus,manual_example --zenodo-config outputs/fixture_zenodo.json \
+            --output-dir outputs/archive
+          mkdir -p current_sources/scopus current_sources/manual_example
+          Rscript scripts/updater/workflow_01s_scopus_sidecar_adapter.R \
+            --input-dir outputs/workflow00/harvests/scopus/native_id_reconciliation/filtered_source \
+            --output-dir current_sources/scopus
+          cp outputs/workflow00/harvests/manual_example/native_id_reconciliation/filtered_source/records.jsonl \
+            current_sources/manual_example/records.jsonl
+          Rscript scripts/updater/workflow_01_build_runtime_catalogue.R \
+            --w00-sources scopus,manual_example --output outputs/runtime_catalogue.json
+          Rscript scripts/updater/workflow_01_prepare_source_catalogue.R \
+            --catalogue outputs/runtime_catalogue.json --output-manifest outputs/w01_source_inputs.json
+          Rscript - <<'RS'
+          library(jsonlite)
+          a <- fromJSON("outputs/workflow00/harvests/scopus/native_id_reconciliation/reconciliation_manifest.json")
+          b <- fromJSON("outputs/workflow00/harvests/manual_example/native_id_reconciliation/reconciliation_manifest.json")
+          x <- fromJSON("outputs/workflow00/plan/source_search_report.json")
+          m <- fromJSON("outputs/w01_source_inputs.json")
+          stopifnot(a$new_native_ids==2,b$new_native_ids==2,
+            x$source_count==2,x$downloaded_manifestations==5,
+            m$status=="validated",length(m$sources)==2)
+          cat("PASS: first run 2 databases, exact native IDs, 5 raw/4 unique, W01-compatible handoff\n")
+          RS
+      - name: Validate incremental update and reject conflicting source identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_00_search_orchestrator.R --run-type monthly \
+            --config outputs/fixture_strategy.json --output-dir outputs/update/plan
+          for SOURCE in scopus manual_example; do
+            SCRIPT="workflow_00_sidecar_native_id_reconcile.R"
+            if [ "$SOURCE" = scopus ]; then SCRIPT="workflow_00_native_id_reconcile.R"; fi
+            Rscript "scripts/updater/$SCRIPT" --source "$SOURCE" --run-type monthly \
+              --current-root "outputs/update/harvests/$SOURCE/source_child" \
+              --history-root "outputs/workflow00/harvests/$SOURCE" \
+              --output-dir "outputs/update/harvests/$SOURCE/native_id_reconciliation"
+            Rscript scripts/updater/workflow_00_record_source.R \
+              --search-plan outputs/update/plan/search_plan.json --source "$SOURCE" \
+              --output-root outputs/update --parent-run-id 222222
+          done
+          Rscript scripts/updater/workflow_00_validate_search_receipts.R \
+            --search-plan outputs/update/plan/search_plan.json \
+            --receipts-dir outputs/update/search_records \
+            --output outputs/update/plan/source_search_report.json
+          Rscript - <<'RS'
+          library(jsonlite)
+          a<-fromJSON("outputs/update/harvests/scopus/native_id_reconciliation/reconciliation_manifest.json")
+          b<-fromJSON("outputs/update/harvests/manual_example/native_id_reconciliation/reconciliation_manifest.json")
+          stopifnot(a$already_known_native_ids==1,a$new_native_ids==1,
+                    b$already_known_native_ids==1,b$new_native_ids==1,
+                    length(readLines("outputs/update/harvests/manual_example/native_id_reconciliation/filtered_source/records.jsonl"))==1,
+                    length(readLines("outputs/update/harvests/scopus/native_id_reconciliation/new_native_ids.txt"))==1)
+          cat("PASS: monthly updates retain exact source ID provenance; one new record in each database\n")
+          RS
+          mkdir -p outputs/conflict
+          python3 - <<'PY'
+          import json,pathlib
+          x={"source":{"provider":"manual_example"},"sidecar_identity":{"sidecar_record_id":"manual_example:alpha"},
+             "mapped_fields":{"title":"Conflict 1"}}
+          y={"source":{"provider":"manual_example"},"sidecar_identity":{"sidecar_record_id":"manual_example:alpha"},
+             "mapped_fields":{"title":"Conflict 2"}}
+          pathlib.Path("outputs/conflict/records.jsonl").write_text(json.dumps(x)+"\n"+json.dumps(y)+"\n")
+          PY
+          if Rscript scripts/updater/workflow_00_sidecar_native_id_reconcile.R \
+            --source manual_example --current-root outputs/conflict \
+            --output-dir outputs/conflict/result --run-type full >outputs/conflict/out.log 2>&1; then
+            echo "ERROR: conflicting source records were incorrectly accepted"; exit 1
+          fi
+          grep -q 'Conflicting source payloads for native ID' outputs/conflict/out.log
+          echo "PASS: conflicting identical source IDs rejected"
