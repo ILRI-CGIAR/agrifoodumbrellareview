@@ -4,7 +4,7 @@ on:
     branches: [migration/w00-w03]
     paths: ['.github/workflows/temp_w00_reusable_validation.yml']
 permissions:
-  contents: read
+  contents: write
 jobs:
   full:
     uses: ./.github/workflows/workflow_00_production.yml
