@@ -131,7 +131,7 @@ jobs:
             if(Sys.getenv("MODE")=="expansion" && !length(intersect(old,current)))
               stop("An expansion must share a source with the prior archived search")
             cat("PASS: previous W00 archive verified for source-native ID comparison\n")
-            RS
+          RS
           fi
           if [ "$PUBLISH" = true ]; then
             test -s "$ZENODO_CONFIG" || { echo "Project Zenodo configuration required before API calls" >&2; exit 1; }
@@ -143,7 +143,7 @@ jobs:
             for(c in cfg$creators) stopifnot(!is.null(c$name),nzchar(as.character(c$name)),
               !grepl("REPLACE_WITH_",as.character(c$name),fixed=TRUE))
             cat("PASS: project-specific Zenodo metadata preflight\n")
-            RS
+          RS
           fi
       - name: Restore prior source manifest and native-ID history for updates
         if: inputs.execute == true && inputs.run_type != 'full'
