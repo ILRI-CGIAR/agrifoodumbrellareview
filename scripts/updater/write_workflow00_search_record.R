@@ -35,6 +35,36 @@ searched_at <- arg("--searched-at-utc","")
 exported_at <- arg("--exported-at-utc","")
 source_doi <- arg("--source-zenodo-doi","")
 source_doi_status <- arg("--source-zenodo-status","unverified")
+# A search plan is the authoritative source of the executed search expression
+# and its field scope. A caller may also supply them explicitly, but must agree.
+plan_path <- arg("--search-plan","")
+if(nzchar(plan_path)){
+  if(!file.exists(plan_path))stop("Missing search plan: ",plan_path,call.=FALSE)
+  plan <- fromJSON(plan_path,simplifyVector=FALSE)
+  if(!identical(plan$schema,"evidence-search-plan-v2"))
+    stop("Unsupported search plan schema",call.=FALSE)
+  if(!identical(run_type,plan$run_type))stop("Search plan run-type mismatch",call.=FALSE)
+  def <- plan$source_definitions[[source]]
+  if(is.null(def))stop("Source not present in search plan: ",source,call.=FALSE)
+  planned_query <- as.character(def$query)
+  if(!is.null(query)&&nzchar(query)&&!identical(query,planned_query))
+    stop("Verbatim query differs from immutable search plan",call.=FALSE)
+  query <- planned_query
+  planned_name <- as.character(def$database)
+  planned_platform <- as.character(def$platform)
+  planned_fields <- unlist(def$fields,use.names=FALSE)
+  if(nzchar(database_name)&&!identical(database_name,planned_name))
+    stop("Database name mismatch with search plan",call.=FALSE)
+  if(nzchar(platform_name)&&!identical(platform_name,planned_platform))
+    stop("Platform mismatch with search plan",call.=FALSE)
+  if(nzchar(fields_arg)&&!identical(trimws(strsplit(fields_arg,",",fixed=TRUE)[[1L]]),planned_fields))
+    stop("Search-field scope mismatch with search plan",call.=FALSE)
+  database_name <- planned_name
+  platform_name <- planned_platform
+  fields_arg <- paste(planned_fields,collapse=",")
+  if(!nzchar(search_version))search_version <- as.character(plan$search_version)
+}
+
 search_fields <- if(nzchar(fields_arg))trimws(strsplit(fields_arg,",",fixed=TRUE)[[1L]]) else character()
 search_fields <- unique(search_fields[nzchar(search_fields)])
 valid_utc <- function(x)grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",x)
