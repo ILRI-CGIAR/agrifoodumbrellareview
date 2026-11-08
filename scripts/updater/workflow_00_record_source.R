@@ -61,11 +61,26 @@ if(backend=="manual_ris"){
 }
 if(anyNA(c(hits,downloaded))||hits<0L||downloaded<0L||downloaded>hits)
   stop(source,": cannot reconcile source's reported hits and unique downloaded count",call.=FALSE)
+# Reconciliation counts are tied to the immutable source input, not treated as
+# the provider's originally reported hit count.
+rec_path <- file.path(root,"harvests",source,"native_id_reconciliation","reconciliation_manifest.json")
+if(!file.exists(rec_path))stop("Native-ID reconciliation absent for ",source,call.=FALSE)
+rec <- fromJSON(rec_path,simplifyVector=FALSE)
+if(!identical(scalar(rec$status),"success")||!identical(scalar(rec$source),source))
+  stop("Unverified reconciliation manifest for ",source,call.=FALSE)
+known_n <- nval(rec$already_known_native_ids)
+new_n <- nval(rec$new_native_ids)
+unique_n <- nval(rec$current_unique_records)
+if(anyNA(c(known_n,new_n,unique_n))||known_n+new_n!=unique_n||
+   unique_n>downloaded)
+  stop("Native-ID reconciliation counts do not match source harvest ",source,call.=FALSE)
 # A verified source archive DOI cannot exist before depositing this current run.
 # Archive metadata is added only after archive publication, not forged here.
 cli <- c("scripts/updater/write_workflow00_search_record.R",
  "--source",source,"--run-type",scalar(plan$run_type),"--search-plan",plan_path,
  "--reported-results",as.character(hits),"--downloaded-results",as.character(downloaded),
+ "--known-native-results",as.character(known_n),
+ "--new-native-results",as.character(new_n),
  "--parent-run-id",parent_run,"--child-run-id",parent_run,
  "--searched-at-utc",searched,"--exported-at-utc",exported,
  "--source-zenodo-status","unverified",
