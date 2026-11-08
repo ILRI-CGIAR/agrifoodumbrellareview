@@ -1,38 +1,23 @@
-# Project search inputs
+# Project-specific search and archive configuration
 
-For every new review, supply a **new, topic-specific configuration file** at
-`user_input/workflow00_search_strategy.json`. Do not reuse queries from a
-historical review.
+For a new unrelated project:
 
-The expected format is `evidence-search-strategy-v1`. A synthetic,
-topic-neutral example is in `tests/fixtures/workflow00_search_strategy.json`.
+1. Copy `workflow00_search_strategy.example.json` to your project configuration path. Replace the project strategy version, every search string and the listed databases with the exact provider-specific searches you intend to run. Keep only databases that are actually being searched. The workflow never translates a Scopus string into another provider's syntax.
+2. Copy `zenodo_config.example.json` to the project metadata path. Replace the project title and creators. Source deposits are restricted, and publication requires a separately selected `publish=true` action.
+3. When searching a manually exported database, use `backend: "manual_ris"`. Supply `options.registry`, `options.ris_files`, and verified `search_executed_at_utc` and `exported_at_utc` timestamps. The registry must use `workflow00-source-registry-v1` and exactly match the uploaded RIS filenames.
+4. Open the permanent `Workflow 00 - Search and source archive` workflow, supply both configuration file paths, and first use `execute=false`, `publish=false` to check routing. Only initiate live queries and Zenodo publication after explicit approval.
 
-For each selected database, define:
+## Backend configuration
 
-- `database_name`: human-readable database name to use in provenance.
-- `platform`: the platform/API used for the search.
-- `search_fields`: fields actually queried, e.g. title, abstract, keywords.
-- `queries.full.query`: the **verbatim provider-specific Boolean query**, with the
-  real date/publication restrictions included or separately captured as a
-  provider-verified filter.
-- `queries.monthly` or `queries.fortnightly`, if updates are needed: an
-  independently verified provider-specific query and retrieval filter/window.
-- `queries.expansion`, if expanding the original search: a fully specified
-  provider-specific query, not an automatically combined search expression.
+The `sources` object maps a unique lowercase source code to a source definition containing:
 
-The planner writes `source_queries.json` and `search_plan.json`, and does
-**not contact external databases**.
+- `backend`: `scopus`, `openalex`, `agricola`, `wos`, `europe_pmc`, `ebsco`, `lens`, or `manual_ris`.
+- `database_name` and `platform`: names to be preserved in search reports and record provenance.
+- `search_fields`: the fields actually searched.
+- `queries.full.query`: the **verbatim** search submitted to the named provider.
+- `options`: source-specific parameters (manual RIS files/registry, EBSCO profile configuration, or a full Lens API query object). For Lens, `options.lens_api_query.query.bool.must[0].query_string.query` must match the supplied query string exactly.
+- Optional `queries.monthly`, `queries.fortnightly`, and `queries.expansion` with explicitly verified retrieval windows. The script does not invent date filtering or search syntax.
 
-Each completed search must write an auditable receipt using
-`scripts/updater/write_workflow00_search_record.R`, including the search plan,
-provider-reported hit count, successfully downloaded count, source-native ID
-reconciliation, actual search and export timestamps, and the source archive
-publication status. A Zenodo DOI reservation is not equivalent to publication.
+The working R source entry points are `scripts/updater/workflow_00_search_orchestrator.R`, `workflow_00_execute_source.R`, `workflow_00_record_source.R`, `workflow_00_validate_search_receipts.R`, and the inherited source handler scripts.
 
-**Do not supply dummy dates or copy publication/retrieval counts from another
-project.** Missing fields must be flagged, and client-final reports must fail
-preflight if any mandatory provenance is unverified.
-
-Original historic project search strings and manual source inventories remain
-in the branch until migration of historic state into an archive is complete.
-They must not be treated as defaults for new reviews.
+**Limit:** The W00 production runner currently allows full first-run execution only. Live update/expansion runs intentionally fail preflight until cumulative native-ID reconciliation is validated. The final RIS/PDF report belongs to the later permanent export stage and is not part of the initial database retrieval.
