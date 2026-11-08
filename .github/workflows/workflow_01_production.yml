@@ -1181,14 +1181,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p outputs
-          MANUAL_OPTION=()
-          if [ -f user_input/workflow01_manual_sources.json ]; then
-            MANUAL_OPTION=(--manual-config user_input/workflow01_manual_sources.json)
-          fi
           Rscript scripts/updater/workflow_01_build_runtime_catalogue.R \
             --w00-sources "$W00_SOURCES" \
-            --output outputs/workflow01_runtime_source_catalogue.json \
-            "${MANUAL_OPTION[@]}"
+            --output outputs/workflow01_runtime_source_catalogue.json
           Rscript scripts/updater/workflow_01_prepare_source_catalogue.R \
             --catalogue outputs/workflow01_runtime_source_catalogue.json \
             --output-manifest outputs/workflow01_source_inputs.json
