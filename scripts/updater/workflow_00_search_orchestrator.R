@@ -71,8 +71,11 @@ plan <- list(
   search_version=version,
   source_queries=queries,
   source_definitions=defs,
-  source_mode_support=setNames(lapply(defs,function(z)list(
-      full=TRUE,fortnightly=TRUE,monthly=TRUE,expansion=TRUE)),selected),
+  source_mode_support=setNames(lapply(selected,function(source) {
+    modes <- names(cfg$sources[[source]]$queries)
+    setNames(as.list(c("full","fortnightly","monthly","expansion") %in% modes),
+             c("full","fortnightly","monthly","expansion"))
+  }),selected),
   source_update_methods=if(run_type %in% c("fortnightly","monthly"))
     lapply(defs,function(z)list(field_scope=z$fields,
        retrieval_filter=z$filter,window_rule=z$window,
