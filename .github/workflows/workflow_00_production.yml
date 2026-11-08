@@ -259,6 +259,18 @@ jobs:
           git commit -m "Register verified source archive for run $GITHUB_RUN_ID"
           git push origin "HEAD:$GITHUB_REF_NAME"
           echo "pointer_path=docs/search_record/zenodo/run-$GITHUB_RUN_ID.json" >> "$GITHUB_OUTPUT"
+      - name: Reconcile published source DOI into final methods report
+        if: inputs.execute == true && inputs.publish == true
+        run: |
+          set -euo pipefail
+          POINTER="docs/search_record/zenodo/run-$GITHUB_RUN_ID.json"
+          test -s "$POINTER"
+          Rscript scripts/updater/workflow_00_validate_search_receipts.R \
+            --search-plan outputs/workflow00/plan/search_plan.json \
+            --receipts-dir outputs/workflow00/search_records \
+            --archive-pointer "$POINTER" \
+            --require-published true \
+            --output outputs/workflow00/plan/source_search_report_published.json
       - name: Preserve data and validation receipts
         if: always()
         uses: actions/upload-artifact@v4
