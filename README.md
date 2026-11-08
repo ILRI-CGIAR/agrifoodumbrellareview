@@ -1,50 +1,45 @@
-# Evidence synthesis: bibliographic acquisition and processing
+# Evidence synthesis bibliographic pipeline
 
-This repository is being refactored into a **topic-independent, project-configured** pipeline for literature searching, deduplication, bibliographic metadata repair, publication-status checking, and final export.
+**Working branch:** `migration/w00-w03`. The original LivingEvidenceMap repository and this repository's `main` branch are not modified.
 
-**Refactoring branch:** `migration/w00-w03`. Do not make changes to `main` or the source LivingEvidenceMap repository.
+The repository contains generic source search/acquisition, bibliographic deduplication, metadata repair and publication-status logic. The current refactoring consolidates their permanent workflows and removes historical project-specific recovery code.
 
-## Pipeline architecture
+## Search and acquisition: permanent entry point
 
-1. **Search and acquisition**: project-specific, provider-valid Boolean strategies supplied as data, recorded along with fields searched, actual search/export dates, provider-reported hits, downloaded records, per-source native-ID reconciliation, and authenticated source archives.
-2. **Deduplication**: one canonical work per publication, with every contributing database and original source identity preserved. Decisions requiring review remain auditable.
-3. **Metadata repair**: API and manual abstract fills with DOI/title identity safeguards; preserve conflicting provider evidence and exact decisions.
-4. **Publication status**: retraction/correction/withdrawal checks and a publication-status record for every canonical work.
-5. **Export and reporting**: final included-record RIS (including multiple database provenance), provenance CSV, excluded-work audit, one consolidated methods/results PDF, and checksums.
+`.github/workflows/workflow_00_production.yml` is the single W00 entry point. It accepts a **new search strategy for any subject**, with a different source-specific Boolean string and field definition for every selected database. The original generic source handlers remain intact:
 
-The final-export format and validation rules are defined in `docs/architecture/final_export_contract.md`.
+- Scopus: `workflow_00b_scopus_ingestion.R`
+- OpenAlex: `workflow_00c_openalex_ingestion.R`
+- AGRICOLA via Europe PMC: `workflow_00d_agricola_ingestion.R`
+- Web of Science Starter: `workflow_00e_wos_starter_ingestion.R`
+- Europe PMC (including MED, ETH, CBA, preprints): `workflow_00f_europe_pmc_source_ingestion.R`
+- EBSCO EIT: `workflow_00g_ebsco_ingestion.R`
+- Lens: `workflow_00_lens_orchestrated_search.R`
+- Manual RIS: `workflow_00_ris_ingestion.R`
 
-## Current refactor status
+Each provider handler is invoked through `workflow_00_execute_source.R`. Original source identifiers, raw responses, search timestamps and field definitions are preserved; a common source-receipt validation and restricted Zenodo archiver handle the output. API sources also record native-ID reconciliation using the inherited routine.
 
-The **search query planner, source selection, and search receipt writer** are being made independent of topic or prior run IDs. The permanent smoke/regression tests are in `tests/test_workflow00_core.sh`, executed by `.github/workflows/core_pipeline_checks.yml`.
+## New-project configuration
 
-The generic search planner reads `user_input/workflow00_search_strategy.json`, with schema `evidence-search-strategy-v1`, and requires the **full verbatim executed query** and search-field definition for every selected database. Each update also requires its own provider-verified query/filter; the planner does not manufacture date logic. Example format: `tests/fixtures/workflow00_search_strategy.json`. The fixture is synthetic and not a valid substantive search strategy.
+See `user_input/workflow00_search_strategy.example.json`, `user_input/zenodo_config.example.json`, and `user_input/README.md`. Copy them to project-specific locations, replace all placeholders and provide **verbatim database-valid queries**. Manual sources require original RIS files, a source registry and verified search/export timestamps.
 
-Example, from a fresh R session / shell:
+By default the workflow has `execute=false` and `publish=false`. A dry run validates plans and handler routing without making provider requests. **The live source calls and Zenodo publication require explicit user input.** No test triggers them automatically. Published source receipts are committed on the invoking branch, while search data remain in restricted Zenodo.
 
-```bash
-Rscript scripts/updater/workflow_00_search_orchestrator.R \
-  --run-type full \
-  --config user_input/workflow00_search_strategy.json \
-  --output-dir outputs/updater/workflow00_plan
+### Current validation and limitations
 
-bash tests/test_workflow00_core.sh
-```
+The full synthetic RIS-ingestion → W01-ready sidecars → database search receipts → archived source tree pathway passed GitHub Actions offline. All eight source handler dispatch routes passed no-network checks. These results **do not establish live API access or a successful full cross-database production harvest**: those require a separate explicitly authorised run with actual project queries.
 
-Neither example executes a remote search or publishes to Zenodo. Source-specific harvesters and the downstream workflows must still be integrated and validated before launching a new project's first full pipeline run.
+**Full first-run acquisition is supported.** Fortnightly, monthly and expansion **planning** is generic, but live incremental acquisition remains blocked until the native-ID history/rolling-state delta pathway is independently validated. This prevents accidentally treating an update as a new first-run corpus. The original incremental helpers remain in the source tree for this work.
 
-## Historical production evidence
+## Final output contract
 
-The branch retains immutable pointers and receipts for an earlier eight-database run, which successfully produced 46,361 original manifestations, 21,054 canonical works, and 25 retraction exclusions. These are **historical provenance, not inputs or expected counts for a new project**.
+After deduplication, metadata enrichment and publication-status checks, the eventual automatic export will produce:
 
-Published restricted Zenodo records for that earlier project: [deduplication](https://doi.org/10.5281/zenodo.24042387), [metadata repair](https://doi.org/10.5281/zenodo.24044641), [canonical handoff](https://doi.org/10.5281/zenodo.24044666), [publication-status layer](https://doi.org/10.5281/zenodo.24044731). Earlier source-specific draft DOI identifiers are not evidence of published deposits.
+- RIS with one retained record per work and **all contributing database sources**
+- Source provenance CSV with source-native identifiers
+- One consolidated PDF containing searches, dates, field scopes, hit counts, deduplication, automatic/manual abstract repair, exclusions with DOI lists and archived data DOI links
+- Exclusion audit CSV and machine-readable checksum/count validation
 
-## Safety requirements
+See `docs/architecture/final_export_contract.md`. This final exporter is **not yet integrated**; W01–W03 still contain legacy review-specific code to be removed and corrected in the next stages.
 
-- Never use the earlier project's source counts, queries, dates, review IDs or DOI pointers as defaults for a new project.
-- Preserve original source manifestations and use their identifiers, not abstract-repair providers, to determine database provenance.
-- Do not infer original search dates from file upload, registry or GitHub execution timestamps.
-- Published restricted Zenodo states are immutable. Producing an export does not authorise a new deposit.
-- Run offline tests first. No expensive API calls or automatic downstream dispatch during refactoring.
-
-**Work remaining:** consolidate source-specific acquisition and manual RIS ingestion, then deduplication, enrichment, retraction checking, and generic final reporting. The repository is **not yet approved as an end-to-end reusable production system**.
+Historical run pointers remain in `docs/` until downstream workflow refactoring is complete, but they are **not new-project defaults**. No previous published Zenodo record is rewritten by this refactoring.
