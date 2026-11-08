@@ -154,3 +154,33 @@ members <- utils::untar(arch[[1L]],list=TRUE)
 stopifnot(any(grepl("source_child/handoff/records.jsonl",members,fixed=TRUE)))
 cat("PASS: actual manual RIS ingestion, methods receipt, complete report, SHA-verified offline archive; no network writes\n")
 RS
+
+# The generic dispatcher must route every supported backend without credentials.
+Rscript scripts/updater/workflow_00_search_orchestrator.R \
+  --run-type full --config tests/fixtures/backend_dispatch.json \
+  --output-dir "$tmp/backends/plan"
+for SOURCE in scopus openalex agricola wos pubmed ebsco_medline lens fixture_db; do
+  Rscript scripts/updater/workflow_00_execute_source.R \
+    --search-plan "$tmp/backends/plan/search_plan.json" \
+    --source "$SOURCE" --output-root "$tmp/backends/harvests" --execute false
+done
+# The final source-side handoff is also consumed by W01.
+test -s "$tmp/offline/harvests/fixture_db/source_child/records.jsonl"
+# Verify no accidental API requests or files were created by dry-run dispatch.
+test ! -d "$tmp/backends/harvests"
+Rscript - <<'RS'
+library(yaml)
+x<-read_yaml(".github/workflows/workflow_00_production.yml")
+stopifnot("workflow_call" %in% names(x$on),
+          "workflow_dispatch" %in% names(x$on),
+          !("push" %in% names(x$on)),
+          "search" %in% names(x$jobs))
+for(script in c(
+  "scripts/updater/workflow_00_execute_source.R",
+  "scripts/updater/workflow_00_record_source.R",
+  "scripts/updater/workflow_00_archive_to_zenodo.R",
+  "scripts/updater/workflow_01_restore_workflow00_from_zenodo.R",
+  "scripts/updater/workflow_00_update_state.R"
+))parse(file=script)
+cat("PASS: all eight backends dry-run, W01 handoff path, core workflow YAML and scripts parse\n")
+RS
