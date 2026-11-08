@@ -98,10 +98,15 @@ jobs:
         env:
           EXECUTE: ${{ inputs.execute }}
           PUBLISH: ${{ inputs.publish }}
+          MODE: ${{ inputs.run_type }}
         run: |
           set -euo pipefail
           if [ "$PUBLISH" = true ] && [ "$EXECUTE" != true ]; then
             echo "Cannot publish without explicit execution"; exit 1
+          fi
+          if [ "$MODE" != full ] && [ "$EXECUTE" = true ]; then
+            echo "Incremental retrieval needs validated historical native-ID reconciliation; refusing unverified production update" >&2
+            exit 1
           fi
       - name: Invoke each inherited provider handler, or dry-run only
         env:
