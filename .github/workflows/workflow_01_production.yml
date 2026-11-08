@@ -4,6 +4,11 @@ run-name: W01 ${{ inputs.review_id || 'legacy' }} ${{ inputs.shiny_request_id ||
 on:
   workflow_call:
     inputs:
+      zenodo_config_path:
+        description: Explicit project-specific Zenodo title and creators
+        type: string
+        required: false
+        default: ''
       execution_pathway:
         required: false
         default: github
@@ -50,6 +55,11 @@ on:
         type: boolean
   workflow_dispatch:
     inputs:
+      zenodo_config_path:
+        description: Explicit project-specific Zenodo title and creators
+        type: string
+        required: false
+        default: ''
       execution_pathway:
         description: "Execution route (review-specific requests remain preflight-only)"
         required: false
@@ -117,6 +127,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  EVIDENCE_ZENODO_CONFIG: ${{ inputs.zenodo_config_path }}
   WORKFLOW01_BRANCH: ${{ github.ref_name }}
   WORKFLOW00_REPORTING_BRANCH: ${{ github.ref_name }}
 
