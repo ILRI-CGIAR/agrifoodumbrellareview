@@ -8,6 +8,18 @@ plan_path<-arg("--search-plan")
 receipt_dir<-arg("--receipts-dir")
 output<-arg("--output")
 require_published<-identical(tolower(arg("--require-published","false")),"true")
+archive_pointer_path <- arg("--archive-pointer","")
+published_archive <- NULL
+if(nzchar(archive_pointer_path)){
+  if(!file.exists(archive_pointer_path))
+    stop("Published source archive pointer not found: ",archive_pointer_path,call.=FALSE)
+  published_archive <- fromJSON(archive_pointer_path,simplifyVector=FALSE)
+  if(!identical(published_archive$status,"published") ||
+     !identical(published_archive$visibility,"restricted") ||
+     !nzchar(as.character(published_archive$doi)))
+    stop("Source archive pointer is not a published restricted Zenodo record with DOI",call.=FALSE)
+}
+
 if(any(vapply(list(plan_path,receipt_dir,output),is.null,logical(1))))
   stop("Required: --search-plan --receipts-dir --output",call.=FALSE)
 if(!file.exists(plan_path)||!dir.exists(receipt_dir))
@@ -26,6 +38,16 @@ if(length(paths)!=length(src)||anyDuplicated(codes)||!setequal(src,codes))
   stop("Expected exactly one current-run receipt per planned source",call.=FALSE)
 ord<-match(src,codes)
 paths<-paths[ord];receipts<-receipts[ord]
+if(!is.null(published_archive)){
+  if(!identical(as.character(published_archive$project_id),project_id) ||
+     !identical(as.character(published_archive$search_version),as.character(plan$search_version)) ||
+     !identical(as.character(published_archive$run_type),as.character(plan$run_type)) ||
+     !setequal(unlist(published_archive$sources,use.names=FALSE),src))
+    stop("Published Zenodo pointer does not match current search project, version, mode or source roster",call.=FALSE)
+  if(is.null(published_archive$archive_files) || !length(published_archive$archive_files))
+    stop("Published source archive lacks uploaded-file checksum manifest",call.=FALSE)
+}
+
 scalar<-function(x)if(is.null(x)||!length(x))"" else as.character(x[[1L]])
 utc<-function(x)grepl("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",scalar(x))
 out<-vector("list",length(src))
@@ -51,6 +73,19 @@ for(i in seq_along(src)){
   a<-z$source_archive
   state<-scalar(a$publication_status)
   doi<-scalar(a$doi)
+  # Original source receipts are immutable evidence of what was known before
+  # publication. Publication status is resolved against the post-publish
+  # current-run pointer, not backfilled into the original source receipts.
+  if(!is.null(published_archive)){
+    if(!identical(scalar(z$github$parent_workflow_run_id),
+                  scalar(published_archive$github_run_id)))
+      stop("Source receipt run identity differs from published archive: ",src[[i]],call.=FALSE)
+    if(state=="published_verified" && nzchar(doi) &&
+       !identical(doi,scalar(published_archive$doi)))
+      stop("Conflicting source DOI versus authoritative published archive: ",src[[i]],call.=FALSE)
+    doi<-scalar(published_archive$doi)
+    state<-"published_verified"
+  }
   if(require_published&&(!identical(state,"published_verified")||!nzchar(doi)))
     stop("Final source methods require verified published source archive: ",src[[i]],call.=FALSE)
   out[[i]]<-list(source=src[[i]],database_name=scalar(z$database_name),
@@ -68,6 +103,8 @@ result<-list(schema="evidence-search-source-report-v1",project_id=project_id,
   source_count=length(out),downloaded_manifestations=sum(vapply(out,function(z)z$downloaded_records,integer(1))),
   total_provider_reported_hits=sum(vapply(out,function(z)z$provider_reported_hits,integer(1))),
   source_searches=out,source_plan_sha256=digest(file=plan_path,algo="sha256",serialize=FALSE),
+  published_source_archive_pointer=if(nzchar(archive_pointer_path))archive_pointer_path else NULL,
+  published_source_archive_doi=if(!is.null(published_archive))scalar(published_archive$doi) else NULL,
   report_ready=all(vapply(out,function(z)identical(z$source_archive$publication_status,"published_verified"),logical(1))))
 dir.create(dirname(output),recursive=TRUE,showWarnings=FALSE)
 writeLines(toJSON(result,auto_unbox=TRUE,pretty=TRUE,null="null"),output)
