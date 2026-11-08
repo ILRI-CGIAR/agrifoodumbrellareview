@@ -117,8 +117,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  WORKFLOW01_BRANCH: migration/w00-w03
-  WORKFLOW00_REPORTING_BRANCH: migration/w00-w03
+  WORKFLOW01_BRANCH: ${{ github.ref_name }}
+  WORKFLOW00_REPORTING_BRANCH: ${{ github.ref_name }}
 
 jobs:
   review-input-preflight:
@@ -968,18 +968,7 @@ jobs:
           fi
           POINTER="workflow00_registry/$W00_POINTER"
           SCHEMA="$(POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE);cat(if(is.null(x$schema)) "" else x$schema)')"
-          if [ "$SCHEMA" = "ilri-w00-validated-artifacts-v1" ]; then
-            POINTER="$POINTER" Rscript -e '
-              x<-jsonlite::fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE)
-              stopifnot(identical(x$status,"validated"),
-                        identical(x$first_run,TRUE),
-                        identical(x$branch,Sys.getenv("WORKFLOW01_BRANCH")),
-                        as.integer(x$expected_total_records)==46361L,
-                        setequal(names(x$api_sources),c("scopus","lens","openalex","agricola","wos")),
-                        setequal(names(x$manual_sources),c("cab","proquest","lilacs")))
-              cat("PASS: ILRI run-pinned W00 source pointer preflight\n")'
-            SOURCES="scopus,lens,openalex,agricola,wos"
-          elif [ "$SCHEMA" = "living-evidence-map-workflow00-state-v1" ]; then
+          if [ "$SCHEMA" = "living-evidence-map-workflow00-state-v1" ]; then
             Rscript scripts/updater/workflow_00_validate_state.R --state "$POINTER"
             SOURCES="$(POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE);s<-names(x$sources);stopifnot(length(s)>0L,all(grepl("^[a-z0-9][a-z0-9_-]*$",s)));cat(paste(s,collapse=","))')"
           else
@@ -1045,18 +1034,6 @@ jobs:
           SCHEMA="$(POINTER="$POINTER" Rscript -e 'x<-jsonlite::fromJSON(Sys.getenv("POINTER"),simplifyVector=FALSE);cat(if(is.null(x$schema)) "" else x$schema)')"
           rm -rf current_workflow00
           mkdir -p current_workflow00
-          if [ "$SCHEMA" = "ilri-w00-validated-artifacts-v1" ]; then
-            mkdir -p inputs/ilri_w00_api inputs/ilri_w00_manual
-            gh run download 42386416321 --repo "$GITHUB_REPOSITORY" --name ilri-w01-api-source-files --dir inputs/ilri_w00_api
-            gh run download 42385813489 --repo "$GITHUB_REPOSITORY" --name ilri-w01-manual-handoff-not-full-corpus --dir inputs/ilri_w00_manual
-            Rscript scripts/updater/workflow_00_ilri_restore_validated_artifacts.R \
-              --pointer "$POINTER" \
-              --api-dir inputs/ilri_w00_api \
-              --manual-dir inputs/ilri_w00_manual \
-              --output-root current_workflow00
-            echo "PASS: ILRI W00 artifacts restored into original W01 adapter input layout"
-            exit 0
-          fi
           if [ "$SCHEMA" = "living-evidence-map-workflow00-state-v1" ]; then
             Rscript scripts/updater/workflow_01_restore_workflow00_state.R               --state "$POINTER"               --output-root current_workflow00
             echo "PASS: restored authoritative composite Workflow 00 state"
@@ -1210,7 +1187,6 @@ jobs:
           fi
           Rscript scripts/updater/workflow_01_build_runtime_catalogue.R \
             --w00-sources "$W00_SOURCES" \
-            --w00-status docs/current_run/current_run_status.json \
             --output outputs/workflow01_runtime_source_catalogue.json \
             "${MANUAL_OPTION[@]}"
           Rscript scripts/updater/workflow_01_prepare_source_catalogue.R \
