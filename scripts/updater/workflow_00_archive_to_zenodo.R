@@ -33,6 +33,11 @@ if(is.null(zenodo_cfg$creators)||!length(zenodo_cfg$creators))
   stop("Zenodo metadata config requires project creators",call.=FALSE)
 project_title <- as.character(or_else(zenodo_cfg$title,""))
 if(!nzchar(trimws(project_title)))stop("Zenodo metadata config requires project title",call.=FALSE)
+if(grepl("REPLACE_WITH_",project_title,fixed=TRUE) ||
+   any(vapply(zenodo_cfg$creators,function(z)
+     grepl("REPLACE_WITH_",as.character(or_else(z$name,"")),fixed=TRUE),
+     logical(1))))
+  stop("Fill project-specific Zenodo metadata before archiving",call.=FALSE)
 archive_prefix <- gsub("[^a-zA-Z0-9_-]+","_",basename(repository))
 if(!nzchar(archive_prefix))stop("Invalid repository archive prefix",call.=FALSE)
 
