@@ -12,6 +12,11 @@ on:
         required: false
         type: string
         default: full
+      previous_w00_pointer_path:
+        description: Published W00 pointer for updates; leave empty for a new first run
+        required: false
+        type: string
+        default: ''
       execute:
         required: false
         type: boolean
@@ -52,6 +57,11 @@ on:
         type: choice
         options: [full, fortnightly, monthly, expansion]
         default: full
+      previous_w00_pointer_path:
+        description: Existing published W00 pointer; required when executing updates
+        required: false
+        type: string
+        default: ''
       execute:
         type: boolean
         required: true
@@ -99,18 +109,57 @@ jobs:
           EXECUTE: ${{ inputs.execute }}
           PUBLISH: ${{ inputs.publish }}
           MODE: ${{ inputs.run_type }}
+          PREVIOUS_POINTER: ${{ inputs.previous_w00_pointer_path }}
+          ZENODO_CONFIG: ${{ inputs.zenodo_config_path }}
         run: |
           set -euo pipefail
           if [ "$PUBLISH" = true ] && [ "$EXECUTE" != true ]; then
             echo "Cannot publish without explicit execution"; exit 1
           fi
           if [ "$MODE" != full ] && [ "$EXECUTE" = true ]; then
-            echo "Incremental retrieval needs validated historical native-ID reconciliation; refusing unverified production update" >&2
-            exit 1
+            test -s "$PREVIOUS_POINTER" || { echo "A verified existing W00 pointer is required for updates" >&2; exit 1; }
+            PREVIOUS_POINTER="$PREVIOUS_POINTER" MODE="$MODE" Rscript - <<'RS'
+            x <- jsonlite::fromJSON(Sys.getenv("PREVIOUS_POINTER"),simplifyVector=FALSE)
+            p <- jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json",simplifyVector=FALSE)
+            stopifnot(identical(x$status,"published"),identical(x$visibility,"restricted"),
+              nzchar(as.character(x$zenodo_deposition_id)))
+            old <- as.character(unlist(x$sources,use.names=FALSE))
+            current <- names(p$source_definitions)
+            if(Sys.getenv("MODE") %in% c("monthly","fortnightly") && !setequal(old,current))
+              stop("Updates require the previous W00 source roster; add new sources through expansion")
+            if(Sys.getenv("MODE")=="expansion" && !length(intersect(old,current)))
+              stop("An expansion must share a source with the prior archived search")
+            cat("PASS: previous W00 archive verified for source-native ID comparison\n")
+            RS
           fi
+          if [ "$PUBLISH" = true ]; then
+            test -s "$ZENODO_CONFIG" || { echo "Project Zenodo configuration required before API calls" >&2; exit 1; }
+            ZENODO_CONFIG="$ZENODO_CONFIG" Rscript - <<'RS'
+            cfg <- jsonlite::fromJSON(Sys.getenv("ZENODO_CONFIG"),simplifyVector=FALSE)
+            stopifnot(!is.null(cfg$title),nzchar(as.character(cfg$title)),
+              !grepl("REPLACE_WITH_",as.character(cfg$title),fixed=TRUE),
+              length(cfg$creators)>0L)
+            for(c in cfg$creators) stopifnot(!is.null(c$name),nzchar(as.character(c$name)),
+              !grepl("REPLACE_WITH_",as.character(c$name),fixed=TRUE))
+            cat("PASS: project-specific Zenodo metadata preflight\n")
+            RS
+          fi
+      - name: Restore prior source manifest and native-ID history for updates
+        if: inputs.execute == true && inputs.run_type != 'full'
+        env:
+          PREVIOUS_POINTER: ${{ inputs.previous_w00_pointer_path }}
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$ZENODO_ACCESS_TOKEN" || { echo "Zenodo access token required to restore update history" >&2; exit 1; }
+          Rscript scripts/updater/workflow_01_restore_workflow00_from_zenodo.R \
+            --pointer "$PREVIOUS_POINTER" \
+            --output-root outputs/workflow00/history
+          echo "PASS: restored published historical source archive for exact native-ID reconciliation"
       - name: Invoke each inherited provider handler, or dry-run only
         env:
           EXECUTE: ${{ inputs.execute }}
+          MODE: ${{ inputs.run_type }}
           SCOPUS_API_TOKEN: ${{ secrets.SCOPUS_API_TOKEN }}
           SCOPUS_INSTTOKEN: ${{ secrets.SCOPUS_INSTTOKEN }}
           OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
@@ -128,14 +177,24 @@ jobs:
               --source "$SOURCE" --output-root outputs/workflow00/harvests \
               --execute "$EXECUTE"
             if [ "$EXECUTE" = true ]; then
+              HISTORY="outputs/workflow00/empty_history"
+              if [ "$MODE" != full ]; then HISTORY="outputs/workflow00/history/$SOURCE"; fi
+              mkdir -p "$HISTORY"
               case "$SOURCE" in
                 lens|scopus|openalex|agricola|pubmed|ethos|cba|epmc_preprints|wos)
-                  mkdir -p outputs/workflow00/empty_history
                   Rscript scripts/updater/workflow_00_native_id_reconcile.R \
                     --source "$SOURCE" \
-                    --run-type full \
+                    --run-type "$MODE" \
                     --current-root "outputs/workflow00/harvests/$SOURCE/source_child" \
-                    --history-root outputs/workflow00/empty_history \
+                    --history-root "$HISTORY" \
+                    --output-dir "outputs/workflow00/harvests/$SOURCE/native_id_reconciliation"
+                  ;;
+                *)
+                  Rscript scripts/updater/workflow_00_sidecar_native_id_reconcile.R \
+                    --source "$SOURCE" \
+                    --run-type "$MODE" \
+                    --current-root "outputs/workflow00/harvests/$SOURCE/source_child" \
+                    --history-root "$HISTORY" \
                     --output-dir "outputs/workflow00/harvests/$SOURCE/native_id_reconciliation"
                   ;;
               esac
