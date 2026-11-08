@@ -1,0 +1,196 @@
+name: Workflow 00 - Search and source archive
+on:
+  workflow_call:
+    inputs:
+      strategy_path:
+        required: true
+        type: string
+      zenodo_config_path:
+        required: true
+        type: string
+      run_type:
+        required: false
+        type: string
+        default: full
+      execute:
+        required: false
+        type: boolean
+        default: false
+      publish:
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      ZENODO_ACCESS_TOKEN:
+        required: false
+      SCOPUS_API_TOKEN:
+        required: false
+      SCOPUS_INSTTOKEN:
+        required: false
+      OPENALEX_API_KEY:
+        required: false
+      OPENALEX_API_TOKEN:
+        required: false
+      WOS_STARTER_API:
+        required: false
+      LENS_API_TOKEN:
+        required: false
+      EBSCO_EHOST_UID:
+        required: false
+      EBSCO_EHOST_PWD:
+        required: false
+  workflow_dispatch:
+    inputs:
+      strategy_path:
+        required: true
+        type: string
+      zenodo_config_path:
+        required: true
+        type: string
+      run_type:
+        required: true
+        type: choice
+        options: [full, fortnightly, monthly, expansion]
+        default: full
+      execute:
+        type: boolean
+        required: true
+        default: false
+      publish:
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: write
+concurrency:
+  group: workflow00-source-acquisition-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    outputs:
+      pointer_path: ${{ steps.register.outputs.pointer_path }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install existing source handler dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libcurl4-openssl-dev libxml2-dev
+          Rscript -e "install.packages(c('jsonlite','digest','httr2','curl','xml2'))"
+      - name: Validate project-specific source strategy
+        env:
+          STRATEGY: ${{ inputs.strategy_path }}
+          MODE: ${{ inputs.run_type }}
+        run: |
+          set -euo pipefail
+          test -s "$STRATEGY"
+          Rscript scripts/updater/workflow_00_search_orchestrator.R \
+            --run-type "$MODE" --config "$STRATEGY" --output-dir outputs/workflow00/plan
+      - name: Enforce explicit provider and publication permission
+        env:
+          EXECUTE: ${{ inputs.execute }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISH" = true ] && [ "$EXECUTE" != true ]; then
+            echo "Cannot publish without explicit execution"; exit 1
+          fi
+      - name: Invoke each inherited provider handler, or dry-run only
+        env:
+          EXECUTE: ${{ inputs.execute }}
+          SCOPUS_API_TOKEN: ${{ secrets.SCOPUS_API_TOKEN }}
+          SCOPUS_INSTTOKEN: ${{ secrets.SCOPUS_INSTTOKEN }}
+          OPENALEX_API_KEY: ${{ secrets.OPENALEX_API_KEY }}
+          OPENALEX_API_TOKEN: ${{ secrets.OPENALEX_API_TOKEN }}
+          WOS_STARTER_API: ${{ secrets.WOS_STARTER_API }}
+          LENS_API_TOKEN: ${{ secrets.LENS_API_TOKEN }}
+          EBSCO_EHOST_UID: ${{ secrets.EBSCO_EHOST_UID }}
+          EBSCO_EHOST_PWD: ${{ secrets.EBSCO_EHOST_PWD }}
+        run: |
+          set -euo pipefail
+          SOURCES="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json",simplifyVector=FALSE);cat(paste(names(x$source_definitions),collapse=" "))')"
+          for SOURCE in $SOURCES; do
+            Rscript scripts/updater/workflow_00_execute_source.R \
+              --search-plan outputs/workflow00/plan/search_plan.json \
+              --source "$SOURCE" --output-root outputs/workflow00/harvests \
+              --execute "$EXECUTE"
+            if [ "$EXECUTE" = true ]; then
+              Rscript scripts/updater/workflow_00_record_source.R \
+                --search-plan outputs/workflow00/plan/search_plan.json \
+                --source "$SOURCE" --output-root outputs/workflow00
+            fi
+          done
+      - name: Validate source provenance and assemble offline archive
+        if: inputs.execute == true
+        env:
+          ZENODO_CONFIG: ${{ inputs.zenodo_config_path }}
+          MODE: ${{ inputs.run_type }}
+        run: |
+          set -euo pipefail
+          test -s "$ZENODO_CONFIG"
+          Rscript scripts/updater/workflow_00_validate_search_receipts.R \
+            --search-plan outputs/workflow00/plan/search_plan.json \
+            --receipts-dir outputs/workflow00/search_records \
+            --output outputs/workflow00/plan/source_search_report.json
+          SOURCES="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json",simplifyVector=FALSE);cat(paste(names(x$source_definitions),collapse=","))')"
+          VERSION="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json");cat(x$search_version)')"
+          Rscript scripts/updater/workflow_00_archive_to_zenodo.R \
+            --staging-root outputs/workflow00 --run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" --run-type "$MODE" \
+            --search-version "$VERSION" --sources "$SOURCES" \
+            --zenodo-config "$ZENODO_CONFIG" \
+            --output-dir outputs/workflow00_archive --validate-only true
+      - name: Publish restricted source archive only when explicitly requested
+        if: inputs.execute == true && inputs.publish == true
+        env:
+          ZENODO_CONFIG: ${{ inputs.zenodo_config_path }}
+          MODE: ${{ inputs.run_type }}
+          ZENODO_ACCESS_TOKEN: ${{ secrets.ZENODO_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$ZENODO_ACCESS_TOKEN"
+          SOURCES="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json",simplifyVector=FALSE);cat(paste(names(x$source_definitions),collapse=","))')"
+          VERSION="$(Rscript -e 'x<-jsonlite::fromJSON("outputs/workflow00/plan/search_plan.json");cat(x$search_version)')"
+          Rscript scripts/updater/workflow_00_archive_to_zenodo.R \
+            --staging-root outputs/workflow00 --run-id "$GITHUB_RUN_ID" \
+            --repository "$GITHUB_REPOSITORY" --run-type "$MODE" \
+            --search-version "$VERSION" --sources "$SOURCES" \
+            --zenodo-config "$ZENODO_CONFIG" \
+            --output-dir outputs/workflow00_archive
+      - name: Register new archived search receipt
+        id: register
+        if: inputs.execute == true && inputs.publish == true
+        run: |
+          set -euo pipefail
+          Rscript scripts/updater/workflow_00_update_zenodo_registry.R \
+            --receipt outputs/workflow00_archive/zenodo_receipt.json \
+            --registry docs/search_record/zenodo_registry.csv \
+            --pointer-dir docs/search_record/zenodo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git add docs/search_record/zenodo_registry.csv "docs/search_record/zenodo/run-$GITHUB_RUN_ID.json"
+          git commit -m "Register verified source archive for run $GITHUB_RUN_ID"
+          git push origin "HEAD:$GITHUB_REF_NAME"
+          echo "pointer_path=docs/search_record/zenodo/run-$GITHUB_RUN_ID.json" >> "$GITHUB_OUTPUT"
+      - name: Preserve data and validation receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow00-handoff-${{ github.run_id }}
+          path: |
+            outputs/workflow00/plan/
+            outputs/workflow00/search_records/
+            outputs/workflow00/harvests/
+            outputs/workflow00_archive/offline_validation.json
+            outputs/workflow00_archive/zenodo_receipt.json
+          retention-days: 30
+          if-no-files-found: warn
