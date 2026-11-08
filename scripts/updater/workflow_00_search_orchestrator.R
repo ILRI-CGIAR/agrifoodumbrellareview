@@ -12,6 +12,8 @@ arg <- function(key, default=NULL) {
 required_string <- function(x,label) {
   if(is.null(x)||length(x)!=1L||is.na(x)||!nzchar(trimws(x)))
     stop("Missing or invalid ",label,call.=FALSE)
+  if(grepl("REPLACE_WITH_",as.character(x),fixed=TRUE))
+    stop("Unfilled project configuration placeholder in ",label,call.=FALSE)
   as.character(x)
 }
 run_type <- arg("--run-type")
