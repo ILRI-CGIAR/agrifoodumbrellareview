@@ -35,6 +35,28 @@ Rscript scripts/updater/write_workflow00_search_record.R \
   --searched-at-utc 2026-01-02T10:00:00Z \
   --exported-at-utc 2026-01-02T10:25:00Z \
   --source-zenodo-status unverified --output-root "$tmp/from_plan"
+Rscript scripts/updater/write_workflow00_search_record.R \
+  --source wos --run-type full \
+  --search-plan "$tmp/full/search_plan.json" \
+  --reported-results 11 --downloaded-results 11 \
+  --parent-run-id test-00001 --child-run-id test-00004 \
+  --searched-at-utc 2026-01-02T11:00:00Z \
+  --exported-at-utc 2026-01-02T11:10:00Z \
+  --source-zenodo-status unverified --output-root "$tmp/from_plan"
+Rscript scripts/updater/workflow_00_validate_search_receipts.R \
+  --search-plan "$tmp/full/search_plan.json" \
+  --receipts-dir "$tmp/from_plan" \
+  --output "$tmp/source_report.json"
+if Rscript scripts/updater/workflow_00_validate_search_receipts.R \
+  --search-plan "$tmp/full/search_plan.json" \
+  --receipts-dir "$tmp/from_plan" \
+  --output "$tmp/invalid_source_report.json" \
+  --require-published true 2>"$tmp/missing_publication"; then
+  echo "ERROR: unpublished source must block final report" >&2
+  exit 1
+fi
+grep -q "Final source methods require verified published source archive" "$tmp/missing_publication"
+
 
 TMP_TEST_DIR="$tmp" Rscript - <<'RS'
 library(jsonlite)
@@ -56,8 +78,9 @@ stopifnot(identical(sort(unlist(sel$selected_sources)),sort(c("scopus","wos"))),
 files<-list.files(file.path(root,"records"),pattern="\\.json$",recursive=TRUE,full.names=TRUE)
 stopifnot(length(files)==1L)
 planned_files<-list.files(file.path(root,"from_plan"),pattern="\\.json$",recursive=TRUE,full.names=TRUE)
-stopifnot(length(planned_files)==1L)
-planned_receipt<-fromJSON(planned_files[[1L]],simplifyVector=FALSE)
+stopifnot(length(planned_files)==2L)
+planned_receipts<-lapply(planned_files,fromJSON,simplifyVector=FALSE)
+planned_receipt<-Filter(function(z)identical(z$source,"scopus"),planned_receipts)[[1L]]
 stopifnot(identical(planned_receipt$database_name,"Scopus"),
   identical(planned_receipt$search_string,'TITLE-ABS-KEY("synthetic term")'),
   identical(unlist(planned_receipt$searched_fields),c("title","abstract","keywords")))
@@ -68,6 +91,11 @@ stopifnot(identical(receipt$database_name,"Scopus"),
   identical(receipt$exported_at_utc,"2026-01-02T10:25:00Z"),
   identical(unlist(receipt$searched_fields),c("title","abstract","keywords")),
   identical(receipt$source_archive$publication_status,"unverified"))
+source_report<-load("source_report.json")
+stopifnot(identical(source_report$schema,"evidence-search-source-report-v1"),
+  as.integer(source_report$downloaded_manifestations)==28L,
+  length(source_report$source_searches)==2L,
+  identical(source_report$report_ready,FALSE))
 cat("PASS: topic-neutral full and monthly search planning; source selection; provenance receipt\n")
 RS
 # Negative check: an expansion without verified source-specific search strings
