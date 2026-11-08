@@ -3,6 +3,10 @@ name: Workflow 02 - Batched production candidate
 on:
   workflow_dispatch:
     inputs:
+      zenodo_config_path:
+        description: Explicit project-specific Zenodo title and creators
+        required: true
+        type: string
       first_run:
         description: Initialise a new review without previous state
         required: false
@@ -27,6 +31,11 @@ on:
         required: false
         default: ''
         type: string
+      publish:
+        description: Publish restricted state to Zenodo (explicit opt-in)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -93,6 +102,7 @@ jobs:
     needs: resolve
     uses: ./.github/workflows/workflow_02_batched.yml
     with:
+      zenodo_config_path: ${{ inputs.zenodo_config_path }}
       first_run: ${{ fromJSON(needs.resolve.outputs.first_run) }}
       workflow01_pointer_path: ${{ needs.resolve.outputs.pointer }}
       google_sheet_id: ${{ needs.resolve.outputs.sheet }}
@@ -103,7 +113,7 @@ jobs:
       batch_size: '250'
       max_records: '0'
       recheck_after_days: '90'
-      publish: true
+      publish: ${{ inputs.publish }}
       use_scopus: true
       enrich_author_keywords: false
     secrets: inherit
