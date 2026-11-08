@@ -107,3 +107,50 @@ if Rscript scripts/updater/workflow_00_search_orchestrator.R \
 fi
 grep -q "no verified expansion query" "$tmp/expected_error"
 echo "PASS: unsupported query mode fails closed"
+
+# Full synthetic W00 ingest -> search record -> source inventory -> archive
+# Runs the real inherited RIS handler. NO provider, Zenodo, or write to repo.
+Rscript scripts/updater/workflow_00_search_orchestrator.R \
+  --run-type full --config tests/fixtures/workflow00_integration.json \
+  --output-dir "$tmp/offline/plan"
+Rscript scripts/updater/workflow_00_execute_source.R \
+  --search-plan "$tmp/offline/plan/search_plan.json" \
+  --source fixture_db --output-root "$tmp/offline/harvests" --execute true
+Rscript scripts/updater/workflow_00_record_source.R \
+  --search-plan "$tmp/offline/plan/search_plan.json" \
+  --source fixture_db --output-root "$tmp/offline" \
+  --parent-run-id 999999
+Rscript scripts/updater/workflow_00_validate_search_receipts.R \
+  --search-plan "$tmp/offline/plan/search_plan.json" \
+  --receipts-dir "$tmp/offline/search_records" \
+  --output "$tmp/offline/plan/source_search_report.json"
+Rscript scripts/updater/workflow_00_archive_to_zenodo.R \
+  --staging-root "$tmp/offline" --run-id 999999 \
+  --repository "generic-org/topic-agnostic-repo" \
+  --run-type full --search-version fixture-v1 \
+  --sources fixture_db \
+  --zenodo-config tests/fixtures/zenodo_metadata.json \
+  --output-dir "$tmp/archive" --validate-only true
+TMP_TEST_DIR="$tmp" Rscript - <<'RS'
+library(jsonlite)
+root <- Sys.getenv("TMP_TEST_DIR")
+src <- file.path(root,"offline/harvests/fixture_db/source_child")
+m <- fromJSON(file.path(src,"manifest.json"))
+stopifnot(identical(m$status,"success"),
+  as.integer(m$records$unique_records_for_handover)==2L)
+lines <- readLines(file.path(src,"handoff/records.jsonl"),warn=FALSE)
+stopifnot(length(lines)==2L)
+rec <- fromJSON(file.path(root,"offline/plan/source_search_report.json"))
+stopifnot(as.integer(rec$source_count)==1L,
+  as.integer(rec$downloaded_manifestations)==2L,
+  as.integer(rec$total_provider_reported_hits)==2L,
+  identical(rec$source_searches$source,"fixture_db"))
+v <- fromJSON(file.path(root,"archive/offline_validation.json"))
+stopifnot(identical(v$status,"validated_not_published"),
+  identical(v$archive_prefix,"topic-agnostic-repo"))
+arch <- list.files(file.path(root,"archive/archive_files"),pattern="harvest.tar.gz$",full.names=TRUE)
+stopifnot(length(arch)==1L)
+members <- utils::untar(arch[[1L]],list=TRUE)
+stopifnot(any(grepl("source_child/handoff/records.jsonl",members,fixed=TRUE)))
+cat("PASS: actual manual RIS ingestion, methods receipt, complete report, SHA-verified offline archive; no network writes\n")
+RS
