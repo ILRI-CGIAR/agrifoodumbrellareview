@@ -26,6 +26,9 @@ if(!file.exists(config_path)) stop("Missing search strategy: ",config_path,call.
 cfg <- fromJSON(config_path,simplifyVector=FALSE)
 if(!identical(cfg$schema,"evidence-search-strategy-v1"))
   stop("Search strategy schema must be evidence-search-strategy-v1",call.=FALSE)
+project_id <- required_string(cfg$project_id,"project_id")
+if(!grepl("^[a-z][a-z0-9_-]{2,63}$",project_id))
+  stop("project_id must be a stable 3-64 character lower-case slug",call.=FALSE)
 version <- required_string(cfg$search_version,"search_version")
 if(!is.list(cfg$sources)||is.null(names(cfg$sources))||!length(cfg$sources))
   stop("Configure a named 'sources' mapping with one entry per source",call.=FALSE)
@@ -71,6 +74,7 @@ queries <- lapply(defs,function(z)z$query)
 # Consumers of the original script expect source_queries.json and search_plan.json.
 plan <- list(
   schema="evidence-search-plan-v2",
+  project_id=project_id,
   workflow="00",
   status="planned",
   created_at=format(Sys.time(),tz="UTC",format="%Y-%m-%dT%H:%M:%SZ"),
