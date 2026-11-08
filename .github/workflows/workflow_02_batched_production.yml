@@ -1,10 +1,6 @@
 name: Workflow 02 - Batched production candidate
 
 on:
-  push:
-    branches: [migration/w00-w03]
-    paths:
-      - 'docs/enrichment/w02_launch_requests/*.json'
   workflow_dispatch:
     inputs:
       first_run:
@@ -61,17 +57,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = push ]; then
-            mapfile -t REQUESTS < <(git diff --name-only HEAD^ HEAD -- docs/enrichment/w02_launch_requests/)
-            test "${#REQUESTS[@]}" -eq 1
-            REQUEST="${REQUESTS[0]}"
-            test -s "$REQUEST"
-            POINTER="$(python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["first_run"] is True and x.get("previous_workflow02_pointer_path","")==""; print(x["workflow01_pointer_path"])' "$REQUEST")"
-            FIRST_RUN=true
-            PREVIOUS=""
-            RESUME="$(python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); print(x.get("resume_run_id",""))' "$REQUEST")"
-            if [ -n "$RESUME" ]; then [[ "$RESUME" =~ ^[0-9]+$ ]]; fi
-          fi
+
           test -s "$POINTER"
           echo "first_run=$FIRST_RUN" >> "$GITHUB_OUTPUT"
           echo "pointer=$POINTER" >> "$GITHUB_OUTPUT"
