@@ -171,9 +171,10 @@ test ! -d "$tmp/backends/harvests"
 Rscript - <<'RS'
 library(yaml)
 x<-read_yaml(".github/workflows/workflow_00_production.yml")
-stopifnot("workflow_call" %in% names(x$on),
-          "workflow_dispatch" %in% names(x$on),
-          !("push" %in% names(x$on)),
+lines<-readLines(".github/workflows/workflow_00_production.yml",warn=FALSE)
+stopifnot(any(grepl("^  workflow_call:$",lines)),
+          any(grepl("^  workflow_dispatch:$",lines)),
+          !any(grepl("^  push:$",lines)),
           "search" %in% names(x$jobs))
 for(script in c(
   "scripts/updater/workflow_00_execute_source.R",
