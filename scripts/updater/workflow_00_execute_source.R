@@ -100,6 +100,14 @@ if(!identical(as.integer(status),0L))stop("W00 handler failed: ",source,call.=FA
 if(!file.exists(file.path(dest,"manifest.json")))stop("Handler completed without manifest: ",source,call.=FALSE)
 m <- fromJSON(file.path(dest,"manifest.json"),simplifyVector=FALSE)
 if(!identical(sval(m$status,"success"),"success"))stop("Handler did not complete successfully: ",source,call.=FALSE)
+# Give W01 one canonical prepared source input path while retaining original
+# raw RIS files and the source's complete parsing/audit ledger.
+if(backend=="manual_ris"){
+  src <- file.path(dest,"handoff","records.jsonl")
+  dst <- file.path(dest,"records.jsonl")
+  if(!file.exists(src)||!file.copy(src,dst,overwrite=TRUE))
+    stop("Manual RIS source lacks the W01-ready records.jsonl handoff",call.=FALSE)
+}
 finished <- format(Sys.time(),tz="UTC",format="%Y-%m-%dT%H:%M:%SZ")
 writeLines(toJSON(list(source=source,backend=backend,started_at_utc=started,
   completed_at_utc=finished,query=query,search_version=plan$search_version),
