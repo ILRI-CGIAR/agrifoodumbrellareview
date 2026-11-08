@@ -34,7 +34,7 @@ jobs:
           }}
           p.write_text(json.dumps(q))
           PY
- outputs/offline/harvests/scopus/source_child/raw outputs/offline/harvests/wos/source_child/raw
+          mkdir -p outputs/offline/harvests/scopus/source_child/raw outputs/offline/harvests/wos/source_child/raw
           Rscript scripts/updater/workflow_00_search_orchestrator.R             --run-type full --config outputs/offline/search_strategy.json             --output-dir outputs/offline/plan
           for SOURCE in scopus wos; do
             Rscript scripts/updater/workflow_00_execute_source.R               --search-plan outputs/offline/plan/search_plan.json --source "$SOURCE"               --output-root outputs/offline/harvests --execute false
