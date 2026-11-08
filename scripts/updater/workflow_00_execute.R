@@ -99,10 +99,10 @@ for(source in sources){
   recorded_query<-scalar(x$query,scalar(x$base_query,scalar(x$query_string)))
   if(nzchar(recorded_query)&&!identical(recorded_query,query))
     stop("Backend executed query mismatch: ",source,call.=FALSE)
-  expected<-suppressWarnings(as.integer(x$reported_total %||% x$total_results_reported_first_page %||%
+  expected<-suppressWarnings(as.integer(x$reported_total %||% x$unpartitioned_total %||% x$total_results_reported_first_page %||%
      x$total_results_reported_by_openalex_first_page %||% x$reported_search_results %||%
-     x$lens_reported_total %||% x$search$reported_results))
-  retrieved<-suppressWarnings(as.integer(x$records_retrieved %||% x$entries_retrieved %||%
+     x$lens_reported_total %||% x$records$reported_search_results %||% x$search$reported_results))
+  retrieved<-suppressWarnings(as.integer(x$records_retrieved %||% x$records$unique_records_for_handover %||% x$entries_retrieved %||%
      x$unique_records_written %||% x$raw_records_retrieved %||%
      x$records_retrieved %||% x$records_parsed %||% x$validation$unique_records))
   if(length(expected)!=1L||is.na(expected)||length(retrieved)!=1L||is.na(retrieved)||
