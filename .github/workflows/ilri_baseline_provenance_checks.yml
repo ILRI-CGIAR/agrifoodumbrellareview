@@ -6,6 +6,7 @@ on:
       - scripts/updater/ilri_validate_published_baseline.R
       - .github/workflows/ilri_baseline_provenance_checks.yml
       - docs/workflow00/ilri_validated_artifacts_2026-11-07.json
+      - docs/workflow00/ilri_search_provenance_ledger.json
       - docs/current_run/current_run_status.json
       - docs/deduplication/zenodo/run-42401289007.json
       - docs/enrichment/zenodo/run-42418084454.json
