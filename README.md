@@ -21,6 +21,8 @@ Each provider handler is invoked through `workflow_00_execute_source.R`. Origina
 
 ## New-project configuration
 
+Each configuration must have its own stable `project_id`, which prevents mixing the source history of unrelated reviews.
+
 See `user_input/workflow00_search_strategy.example.json`, `user_input/zenodo_config.example.json`, and `user_input/README.md`. Copy them to project-specific locations, replace all placeholders and provide **verbatim database-valid queries**. Manual sources require original RIS files, a source registry and verified search/export timestamps.
 
 By default the workflow has `execute=false` and `publish=false`. A dry run validates plans and handler routing without making provider requests. **The live source calls and Zenodo publication require explicit user input.** No test triggers them automatically. Published source receipts are committed on the invoking branch, while search data remain in restricted Zenodo.
@@ -29,7 +31,7 @@ By default the workflow has `execute=false` and `publish=false`. A dry run valid
 
 The full synthetic RIS-ingestion → W01-ready sidecars → database search receipts → archived source tree pathway passed GitHub Actions offline. All eight source handler dispatch routes passed no-network checks. These results **do not establish live API access or a successful full cross-database production harvest**: those require a separate explicitly authorised run with actual project queries.
 
-**Full first-run acquisition is supported.** Fortnightly, monthly and expansion **planning** is generic, but live incremental acquisition remains blocked until the native-ID history/rolling-state delta pathway is independently validated. This prevents accidentally treating an update as a new first-run corpus. The original incremental helpers remain in the source tree for this work.
+**Full and incremental acquisition share the same permanent W00 workflow.** Fortnightly, monthly and expansion searches require a previously published W00 source archive from the **same explicit project_id**, supplied through `previous_w00_pointer_path`. The workflow restores this archive, reconciles exact source-native identifiers and archives only the current run with a cumulative ID registry; duplicate API and sidecar implementations have been consolidated. Adding sources to an existing search is done with `expansion`. Initial and update reconciliation, source-receipt audit, offline Zenodo package generation and W01-ready source inputs passed synthetic tests. **No live provider-API update or new Zenodo publication has been performed during this refactor.**
 
 ## Final output contract
 
