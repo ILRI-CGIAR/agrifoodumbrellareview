@@ -27,6 +27,15 @@ Rscript scripts/updater/write_workflow00_search_record.R \
   --searched-at-utc 2026-01-02T10:00:00Z \
   --exported-at-utc 2026-01-02T10:25:00Z \
   --source-zenodo-status unverified --output-root "$tmp/records"
+Rscript scripts/updater/write_workflow00_search_record.R \
+  --source scopus --run-type full \
+  --search-plan "$tmp/full/search_plan.json" \
+  --reported-results 17 --downloaded-results 17 \
+  --parent-run-id test-00001 --child-run-id test-00003 \
+  --searched-at-utc 2026-01-02T10:00:00Z \
+  --exported-at-utc 2026-01-02T10:25:00Z \
+  --source-zenodo-status unverified --output-root "$tmp/from_plan"
+
 TMP_TEST_DIR="$tmp" Rscript - <<'RS'
 library(jsonlite)
 root <- Sys.getenv("TMP_TEST_DIR")
@@ -46,6 +55,13 @@ stopifnot(identical(sort(unlist(sel$selected_sources)),sort(c("scopus","wos"))),
           identical(sel$selection_origin,"saved_full_run"))
 files<-list.files(file.path(root,"records"),pattern="\\.json$",recursive=TRUE,full.names=TRUE)
 stopifnot(length(files)==1L)
+planned_files<-list.files(file.path(root,"from_plan"),pattern="\\.json$",recursive=TRUE,full.names=TRUE)
+stopifnot(length(planned_files)==1L)
+planned_receipt<-fromJSON(planned_files[[1L]],simplifyVector=FALSE)
+stopifnot(identical(planned_receipt$database_name,"Scopus"),
+  identical(planned_receipt$search_string,'TITLE-ABS-KEY("synthetic term")'),
+  identical(unlist(planned_receipt$searched_fields),c("title","abstract","keywords")))
+
 receipt<-fromJSON(files[[1L]],simplifyVector=FALSE)
 stopifnot(identical(receipt$database_name,"Scopus"),
   identical(receipt$search_executed_at_utc,"2026-01-02T10:00:00Z"),
