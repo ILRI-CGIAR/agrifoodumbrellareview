@@ -1,5 +1,8 @@
 name: Workflow 00 - Search and source archive
 on:
+  push:
+    branches: [migration/w00-w03]
+    paths: ['.github/workflows/workflow_00_production.yml']
   workflow_call:
     inputs:
       strategy_path:
@@ -72,11 +75,13 @@ on:
         default: false
 permissions:
   contents: write
+  actions: read
 concurrency:
   group: workflow00-source-acquisition-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   search:
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     outputs:
@@ -282,5 +287,171 @@ jobs:
             outputs/workflow00/harvests/
             outputs/workflow00_archive/offline_validation.json
             outputs/workflow00_archive/zenodo_receipt.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  econlit_retrieval:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - name: Install R EBSCO dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libxml2-dev libcurl4-openssl-dev unzip
+          Rscript -e "install.packages(c('httr2','xml2','jsonlite','digest'))"
+      - name: Restore archived search and expected component counts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git show 6865085b49a95b70cc7c4dd9f829e82a032d995f:scripts/updater/econlit_count_probe.R > /tmp/econlit_count_probe.R
+          git show 6865085b49a95b70cc7c4dd9f829e82a032d995f:user_input/scopus_search_2015_onwards.txt > user_input/scopus_search_2015_onwards.txt
+          mkdir -p /tmp/econlit_artifact
+          curl -fsSL --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/ILRI-CGIAR/agrifoodumbrellareview/actions/artifacts/13567813895/zip -o /tmp/econlit_artifact.zip
+          unzip -q /tmp/econlit_artifact.zip -d /tmp/econlit_artifact
+          test -s /tmp/econlit_artifact/count_report.json
+      - name: Retrieve EconLit detailed records and export RIS
+        env:
+          EBSCO_EHOST_UID: ${{ secrets.EBSCO_EHOST_UID }}
+          EBSCO_EHOST_PWD: ${{ secrets.EBSCO_EHOST_PWD }}
+        run: |
+          Rscript - <<'RS'
+          suppressPackageStartupMessages({library(jsonlite);library(xml2);library(httr2);library(digest)})
+          legacy <- readLines("/tmp/econlit_count_probe.R",warn=FALSE)
+          stop_at <- grep("^result <- list\\(",legacy)[1]
+          stopifnot(length(stop_at)==1L,is.finite(stop_at))
+          eval(parse(text=paste(legacy[seq_len(stop_at-1L)],collapse="\n")),envir=.GlobalEnv)
+          baseline <- fromJSON("/tmp/econlit_artifact/count_report.json",simplifyVector=FALSE)
+          stopifnot(length(queries)==35L,length(baseline$components)==35L)
+          dir.create("outputs/econlit/retrieval",recursive=TRUE,showWarnings=FALSE)
+          txt <- function(x,xp) {
+            nodes <- xml_find_all(x,xp)
+            if (!length(nodes)) return("")
+            z <- trimws(xml_text(nodes[[1L]]))
+            if(length(z) && !is.na(z)) z else ""
+          }
+          parse_rec <- function(x) {
+            h <- xml_find_first(x,".//*[local-name()='header']")
+            id <- if(inherits(h,"xml_missing")) "" else xml_attr(h,"uiTerm")
+            if(is.null(id)||is.na(id)||!nzchar(id)) id <- txt(x,".//*[local-name()='ui' and not(@type)]")
+            if(!nzchar(id)) stop("Missing EBSCO accession number in retrieved detailed record")
+            dt <- xml_find_first(x,".//*[local-name()='dt']")
+            year <- if(inherits(dt,"xml_missing")) "" else xml_attr(dt,"year")
+            if(is.null(year)||is.na(year)) year <- ""
+            au <- trimws(xml_text(xml_find_all(x,".//*[local-name()='au']")))
+            kw <- trimws(xml_text(xml_find_all(x,".//*[local-name()='kw']")))
+            doi <- txt(x,".//*[local-name()='ui' and translate(@type,'DOI','doi')='doi']")
+            list(id=id,title=txt(x,".//*[local-name()='atl']"),abstract=txt(x,".//*[local-name()='ab']"),
+                 journal=txt(x,".//*[local-name()='jtl']"),year=year,authors=au[nzchar(au)],
+                 keywords=kw[nzchar(kw)],doi=doi,source="EconLit",db_code="ecn")
+          }
+          retrieve <- function(q,label) {
+            all <- list()
+            start <- 1L
+            total <- NA_integer_
+            repeat {
+              d <- fetch("Search",list(prof=uid,pwd=pwd,authType="profile",db="ecn",
+                   query=q,format="detailed",startrec=as.character(start),numrec="100"))
+              counts <- as.integer(xml_text(xml_find_all(d,"//*[local-name()='Hits']")))
+              counts <- counts[!is.na(counts)]
+              if(!length(counts)) stop(paste("No Hits in",label))
+              n <- counts[[1L]]
+              if(is.na(total)) total <- n
+              if(n!=total) stop(paste("Count changed",label))
+              nodes <- xml_find_all(d,"//*[local-name()='rec']")
+              if(!length(nodes) && total > 0L) stop(paste("No records despite hits",label))
+              if(length(nodes)) all <- c(all,lapply(nodes,parse_rec))
+              if(length(all)>=total) break
+              start <- length(all)+1L
+              if(start>5000L) stop("Pagination exceeds safety window")
+            }
+            if(length(all)!=total) stop(paste("Count mismatch",label,total,length(all)))
+            list(records=all,total=total)
+          }
+          seen <- new.env(hash=TRUE,parent=emptyenv())
+          membership <- new.env(hash=TRUE,parent=emptyenv())
+          rows <- list()
+          for(k in seq_along(queries)){
+            q <- queries[[k]]
+            ids <- integer()
+            ij <- as.integer(strsplit(q$component,":",fixed=TRUE)[[1L]])
+            method <- baseline$components[[k]]$method
+            use_chunks <- identical(method,"partitioned_accession_id_union")
+            local <- list()
+            if(!use_chunks) {
+              direct <- tryCatch(retrieve(q$query,q$component),error=identity)
+              if(inherits(direct,"error")){
+                message(sprintf("Direct retrieval %s failed (%s), using chunked search",q$component,conditionMessage(direct)))
+                use_chunks <- TRUE
+              } else local <- direct$records
+            }
+            if(use_chunks){
+              terms <- flatten_or(agri[[ij[[2L]]]])
+              if(length(terms)<2L)stop(paste("Cannot split failed query",q$component))
+              chunks <- split(terms,ceiling(seq_along(terms)/4L))
+              for(ci in seq_along(chunks)){
+                chunk <- paste(chunks[[ci]],collapse=" OR ")
+                cq <- paste0("(",field_block(climate[[ij[[1L]]]])," AND ",field_block(review),
+                             " AND ",field_block(chunk),") AND (DT 20150101-)")
+                got <- retrieve(cq,paste(q$component,ci,sep="/"))
+                local <- c(local,got$records)
+              }
+            }
+            ids <- vapply(local,function(x)x$id,character(1))
+            distinct <- unique(ids)
+            expected <- as.integer(baseline$components[[k]]$hits)
+            if(length(distinct)!=expected)stop(sprintf("Component %s expected %d, retrieved %d distinct",q$component,expected,length(distinct)))
+            for(rec in local){
+              id <- rec$id
+              if(!exists(id,envir=seen,inherits=FALSE))assign(id,rec,envir=seen)
+              old <- if(exists(id,envir=membership,inherits=FALSE))get(id,envir=membership) else character()
+              assign(id,unique(c(old,q$component)),envir=membership)
+            }
+            rows[[k]] <- data.frame(component=q$component,expected=expected,retrieved=length(distinct),
+                                     method=method,query=q$query,stringsAsFactors=FALSE)
+            message(sprintf("PASS EconLit %s %d unique within component",q$component,length(distinct)))
+          }
+          stopifnot(sum(vapply(rows,function(x)x$retrieved,integer(1)))==162L)
+          ids <- sort(ls(seen,all.names=TRUE))
+          one <- function(tag,x) {
+            if(is.null(x)||!length(x))return(character())
+            z <- trimws(gsub("[\r\n\t]+"," ",as.character(x)))
+            paste0(tag,"  - ",z[nzchar(z)])
+          }
+          ris <- unlist(lapply(ids,function(id){
+            r <- get(id,envir=seen)
+            c("TY  - GEN",one("TI",r$title),one("AU",r$authors),
+              one("PY",r$year),one("JO",r$journal),
+              one("AB",r$abstract),one("KW",r$keywords),
+              one("DO",r$doi),one("ID",paste0("ecn:",id)),
+              one("DB","EconLit"),one("DP","EBSCOhost"),
+              one("N1",paste0("EBSCOhost accession number: ",id)),
+              one("N1",paste0("Matched search components: ",paste(get(id,envir=membership),collapse=", "))),
+              "ER  - ","")
+          }),use.names=FALSE)
+          writeLines(ris,"outputs/econlit/retrieval/EconLit_2015_onwards.ris",useBytes=TRUE)
+          write.csv(do.call(rbind,rows),"outputs/econlit/retrieval/component_search_report.csv",row.names=FALSE)
+          write_json(list(database="EconLit",database_code="ecn",search_date_original="2026-11-07",
+            retrieval_date_utc=format(Sys.time(),tz="UTC",format="%Y-%m-%dT%H:%M:%SZ"),
+            fields=c("TI","AB"),from_year=2015,component_occurrences=162L,
+            unique_accession_records=length(ids),components=lapply(seq_along(rows),function(i)list(
+              component=rows[[i]]$component,hits=rows[[i]]$retrieved,query=rows[[i]]$query))),
+            "outputs/econlit/retrieval/search_report.json",pretty=TRUE,auto_unbox=TRUE)
+          message(sprintf("SUCCESS: %d unique EconLit accession records from 162 component hits",length(ids)))
+          RS
+      - name: Preserve EconLit RIS and full search report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: econlit-retrieved-ris-${{ github.run_id }}
+          path: outputs/econlit/retrieval/
           retention-days: 30
           if-no-files-found: warn
